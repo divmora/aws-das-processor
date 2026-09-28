@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en" class="dark scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AWS DAS Processor — Documentation</title>
+  <meta name="description" content="AWS Database Activity Stream log processor in Go. Consumes SQS events, decrypts payloads via KMS, and exports to Parquet in S3.">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script>
+    mermaid.initialize({ startOnLoad: true, theme: 'dark' });
+    tailwind.config = {
+      darkMode: 'class',
+      theme: { extend: { fontFamily: { sans: ['Inter', 'sans-serif'] } } }
+    }
+  </script>
+  <style>
+    body { background: #0f172a; color: #f8fafc; }
+    .glass {
+      background: rgba(30, 41, 59, 0.6);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .glow { box-shadow: 0 0 40px -10px rgba(99, 102, 241, 0.4); }
+  </style>
+</head>
+<body class="antialiased selection:bg-indigo-500/30 min-h-screen flex flex-col">
+  <nav class="fixed top-0 w-full z-50 glass border-b border-gray-800">
+    <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <span class="font-bold text-lg tracking-tight text-white">AWS DAS Processor</span>
+      </div>
+      <div class="flex gap-6 text-sm font-medium text-gray-300">
+        <a href="https://github.com/divmora/aws-das-processor" target="_blank" class="hover:text-white transition-colors">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="flex-1 pt-32 pb-24">
+    <div class="max-w-4xl mx-auto px-6 text-center mb-16">
+      <h1 class="text-4xl md:text-5xl font-bold tracking-tight mb-6 leading-tight bg-clip-text text-transparent bg-gradient-to-r from-orange-400 via-yellow-400 to-red-400">
+        Database Activity Stream Processor
+      </h1>
+      <p class="text-xl text-gray-400 max-w-2xl mx-auto leading-relaxed">
+        High-performance Go Lambda function that consumes AWS Database Activity Stream (DAS) events via SQS, decrypts payloads via AWS KMS, applies JSON DSL filtering, and exports the stream as Snappy-compressed Parquet files to S3.
+      </p>
+    </div>
+
+    <div class="max-w-6xl mx-auto px-6 mb-24">
+      <div class="glass rounded-3xl p-8 glow relative overflow-hidden">
+        <h2 class="text-2xl font-bold mb-6 text-center">Architecture Diagram</h2>
+        <div class="flex justify-center">
+          <img src="assets/architecture.png" alt="Architecture" class="w-full h-auto rounded-2xl relative z-10 border border-gray-800 shadow-2xl">
+        </div>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

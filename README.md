@@ -7,6 +7,12 @@
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/divmora/aws-das-processor)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-green.svg)](SECURITY.md)
 
+## Architecture
+
+<p align="center">
+  <img src="docs/assets/architecture.png" alt="aws-das-processor Architecture Diagram" width="100%">
+</p>
+
 ## Overview & Key Features
 AWS DAS Processor is a Lambda function that consumes AWS Database Activity Stream events via an SQS fanout from S3. It decrypts, decompresses, filters, and writes the stream data back to S3.
 

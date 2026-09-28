@@ -82,9 +82,24 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) error {
 		slog.Info("Processing SQS message", "MessageId", message.MessageId)
 
 		var s3Event S3EventNotification
-		if err := json.Unmarshal([]byte(message.Body), &s3Event); err != nil {
-			slog.Error("Failed to parse S3 event", "error", err, "body", message.Body)
-			continue
+		
+		// Check if it's an SNS wrapped message
+		var snsMsg struct {
+			Type    string `json:"Type"`
+			Message string `json:"Message"`
+		}
+		if err := json.Unmarshal([]byte(message.Body), &snsMsg); err == nil && snsMsg.Type == "Notification" && snsMsg.Message != "" {
+			// It's an SNS message
+			if err := json.Unmarshal([]byte(snsMsg.Message), &s3Event); err != nil {
+				slog.Error("Failed to parse S3 event from SNS message", "error", err)
+				continue
+			}
+		} else {
+			// Try parsing as direct S3 event
+			if err := json.Unmarshal([]byte(message.Body), &s3Event); err != nil {
+				slog.Error("Failed to parse S3 event", "error", err, "body", message.Body)
+				continue
+			}
 		}
 
 		for _, record := range s3Event.Records {
