@@ -1,0 +1,150 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Database Activity Stream (DAS) Processor - SQS to Lambda Fanout'
+
+Parameters:
+  DasSnsTopicArn:
+    Type: String
+    Description: 'ARN of the existing SNS Topic that receives S3 Event Notifications from the DAS bucket.'
+  
+  DasSourceBucketArn:
+    Type: String
+    Description: 'ARN of the source S3 Bucket containing the encrypted DAS logs.'
+
+  KmsKeyArn:
+    Type: String
+    Description: 'ARN of the KMS Key used to encrypt the DAS logs.'
+
+  RdsResourceId:
+    Type: String
+    Description: 'RDS Resource ID for the encryption context (DAS_RDS_RESOURCE_ID).'
+
+  LambdaImageUri:
+    Type: String
+    Description: 'ECR Image URI for the aws-das-processor Lambda function.'
+
+  FilterName:
+    Type: String
+    Default: 'default'
+    Description: 'Name of the JSON DSL filter to apply (DAS_FILTER_NAME).'
+
+Resources:
+  # 1. Destination S3 Bucket (Parquet Data Lake)
+  DestinationBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # 2. SQS Queue for Fanout
+  ProcessorQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 1209600 # 14 days
+      KmsMasterKeyId: alias/aws/sqs # SSE encryption for queue
+
+  # 3. SQS Queue Policy allowing SNS to publish
+  ProcessorQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref ProcessorQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt ProcessorQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref DasSnsTopicArn
+
+  # 4. Subscribe SQS to SNS Fanout Topic
+  SnsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: sqs
+      Endpoint: !GetAtt ProcessorQueue.Arn
+      TopicArn: !Ref DasSnsTopicArn
+      RawMessageDelivery: false
+
+  # 5. Lambda Execution IAM Role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DasProcessorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub '${DasSourceBucketArn}/*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub '${DestinationBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !Ref KmsKeyArn
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt ProcessorQueue.Arn
+
+  # 6. AWS Lambda Function
+  ProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      PackageType: Image
+      Code:
+        ImageUri: !Ref LambdaImageUri
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 120
+      MemorySize: 512
+      Environment:
+        Variables:
+          DAS_FILTER_NAME: !Ref FilterName
+          DAS_KMS_REGION_NAME: !Ref AWS::Region
+          DAS_RDS_RESOURCE_ID: !Ref RdsResourceId
+          # Output bucket for Parquet files
+          DAS_OUTPUT_BUCKET: !Ref DestinationBucket
+
+  # 7. SQS Event Source Mapping to Lambda
+  EventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt ProcessorQueue.Arn
+      FunctionName: !Ref ProcessorFunction
+      BatchSize: 10
+      Enabled: true
+
+Outputs:
+  DestinationBucketName:
+    Description: 'S3 Data Lake Bucket for Parquet files'
+    Value: !Ref DestinationBucket
+  ProcessorFunctionName:
+    Description: 'Lambda Function Name'
+    Value: !Ref ProcessorFunction
