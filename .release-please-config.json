@@ -1,0 +1,9 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "go",
+      "package-name": "aws-das-processor",
+      "include-component-in-tag": false
+    }
+  }
+}
