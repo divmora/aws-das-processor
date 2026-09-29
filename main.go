@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -298,6 +299,84 @@ type DatabaseActivityEvent struct {
 	ErrorMessage      string   `parquet:"errorMessage,dict" json:"errorMessage"`
 }
 
+// mapToDatabaseActivityEvent maps a generic map to DatabaseActivityEvent,
+// avoiding expensive json.Marshal + json.Unmarshal serialization cycles.
+func mapToDatabaseActivityEvent(m map[string]interface{}) DatabaseActivityEvent {
+	return DatabaseActivityEvent{
+		LogTime:           getString(m, "logTime"),
+		StatementId:       getInt64(m, "statementId"),
+		SubstatementId:    getInt64(m, "substatementId"),
+		ObjectType:        getString(m, "objectType"),
+		Command:           getString(m, "command"),
+		ObjectName:        getString(m, "objectName"),
+		DatabaseName:      getString(m, "databaseName"),
+		DbUserName:        getString(m, "dbUserName"),
+		RemoteHost:        getString(m, "remoteHost"),
+		SessionId:         getString(m, "sessionId"),
+		RowCount:          getInt64(m, "rowCount"),
+		CommandText:       getString(m, "commandText"),
+		ParamList:         getStringSlice(m, "paramList"),
+		Pid:               getInt64(m, "pid"),
+		ClientApplication: getString(m, "clientApplication"),
+		ExitCode:          getString(m, "exitCode"),
+		Class:             getString(m, "class"),
+		ServerHost:        getString(m, "serverHost"),
+		Type:              getString(m, "type"),
+		StartTime:         getString(m, "startTime"),
+		ErrorMessage:      getString(m, "errorMessage"),
+	}
+}
+
+func getString(m map[string]interface{}, key string) string {
+	if v, ok := m[key]; ok && v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+		return fmt.Sprintf("%v", v)
+	}
+	return ""
+}
+
+func getInt64(m map[string]interface{}, key string) int64 {
+	if v, ok := m[key]; ok && v != nil {
+		switch n := v.(type) {
+		case float64:
+			return int64(n)
+		case int64:
+			return n
+		case int:
+			return int64(n)
+		case json.Number:
+			i, _ := n.Int64()
+			return i
+		case string:
+			i, _ := strconv.ParseInt(n, 10, 64)
+			return i
+		}
+	}
+	return 0
+}
+
+func getStringSlice(m map[string]interface{}, key string) []string {
+	if v, ok := m[key]; ok && v != nil {
+		switch items := v.(type) {
+		case []interface{}:
+			result := make([]string, len(items))
+			for i, item := range items {
+				if s, ok := item.(string); ok {
+					result[i] = s
+				} else {
+					result[i] = fmt.Sprintf("%v", item)
+				}
+			}
+			return result
+		case []string:
+			return items
+		}
+	}
+	return nil
+}
+
 func convertJSONToParquet(decompressedJSON []byte, filterConfig *FilterConfig) ([]byte, error) {
 	// We unmarshal into a generic map to perform filtering and drops
 	var container struct {
@@ -308,6 +387,9 @@ func convertJSONToParquet(decompressedJSON []byte, filterConfig *FilterConfig) (
 	}
 
 	var buf bytes.Buffer
+	if len(decompressedJSON) > 0 {
+		buf.Grow(len(decompressedJSON) / 2)
+	}
 	writer := parquet.NewWriter(&buf, parquet.SchemaOf(new(DatabaseActivityEvent)), parquet.Compression(&snappy.Codec{}))
 
 	for _, eventMap := range container.DatabaseActivityEventList {
@@ -324,17 +406,9 @@ func convertJSONToParquet(decompressedJSON []byte, filterConfig *FilterConfig) (
 				delete(eventMap, d)
 			}
 
-			// Convert map back to bytes then struct to leverage strict typing for Parquet schema
-			eventBytes, err := json.Marshal(eventMap)
-			if err != nil {
-				continue
-			}
-
-			var event DatabaseActivityEvent
-			if err := json.Unmarshal(eventBytes, &event); err == nil {
-				if err := writer.Write(event); err != nil {
-					return nil, fmt.Errorf("failed to write parquet row: %w", err)
-				}
+			event := mapToDatabaseActivityEvent(eventMap)
+			if err := writer.Write(event); err != nil {
+				return nil, fmt.Errorf("failed to write parquet row: %w", err)
 			}
 		}
 	}
