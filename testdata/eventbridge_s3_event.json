@@ -1,0 +1,26 @@
+{
+  "version": "0",
+  "id": "eventbridge-id-98765",
+  "detail-type": "Object Created",
+  "source": "aws.s3",
+  "account": "123456789012",
+  "time": "2026-09-29T12:00:00Z",
+  "region": "us-east-1",
+  "resources": [
+    "arn:aws:s3:::aws-das-source-bucket"
+  ],
+  "detail": {
+    "version": "0",
+    "bucket": {
+      "name": "aws-das-source-bucket"
+    },
+    "object": {
+      "key": "AWSLogs/123456789012/RDS/us-east-1/cluster-ABCD/2026/09/29/das-data.json.gz",
+      "size": 1024,
+      "etag": "d41d8cd98f00b204e9800998ecf8427e",
+      "sequencer": "0055AED6DCD90281E5"
+    },
+    "request-id": "C3D13FE58DE4C810",
+    "requester": "123456789012"
+  }
+}

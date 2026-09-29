@@ -1,0 +1,8 @@
+{
+  "Type": "Notification",
+  "MessageId": "sns-message-id-12345",
+  "TopicArn": "arn:aws:sns:us-east-1:123456789012:das-fanout-topic",
+  "Subject": "Amazon S3 Notification",
+  "Message": "{\"Records\":[{\"eventVersion\":\"2.1\",\"eventSource\":\"aws:s3\",\"awsRegion\":\"us-east-1\",\"eventName\":\"ObjectCreated:Put\",\"s3\":{\"bucket\":{\"name\":\"aws-das-source-bucket\"},\"object\":{\"key\":\"AWSLogs/123456789012/RDS/us-east-1/cluster-ABCD/2026/09/29/das-data.json.gz\"}}}]}",
+  "Timestamp": "2026-09-29T12:00:01.000Z"
+}

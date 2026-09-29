@@ -255,7 +255,10 @@ func decryptAWSEncryptionSDKPayload(ctx context.Context, ciphertext, plaintextDa
 	return decryptOutput.Plaintext, nil
 }
 
-// decompressZlib decompresses zlib formatted data
+// maxDecompressedSize limits decompression to 256MB to mitigate decompression bombs.
+const maxDecompressedSize = 256 * 1024 * 1024
+
+// decompressZlib decompresses zlib formatted data with decompression bomb protection.
 func decompressZlib(data []byte) ([]byte, error) {
 	reader, err := zlib.NewReader(bytes.NewReader(data))
 	if err != nil {
@@ -264,7 +267,7 @@ func decompressZlib(data []byte) ([]byte, error) {
 	defer reader.Close()
 
 	var out bytes.Buffer
-	if _, err := io.Copy(&out, reader); err != nil {
+	if _, err := io.Copy(&out, io.LimitReader(reader, maxDecompressedSize)); err != nil {
 		return nil, err
 	}
 	return out.Bytes(), nil
@@ -305,7 +308,7 @@ func convertJSONToParquet(decompressedJSON []byte, filterConfig *FilterConfig) (
 	}
 
 	var buf bytes.Buffer
-	writer := parquet.NewWriter(&buf, parquet.Compression(&snappy.Codec{}))
+	writer := parquet.NewWriter(&buf, parquet.SchemaOf(new(DatabaseActivityEvent)), parquet.Compression(&snappy.Codec{}))
 
 	for _, eventMap := range container.DatabaseActivityEventList {
 		if t, ok := eventMap["type"].(string); ok && t == "heartbeat" {

@@ -10,7 +10,14 @@ fmt:
 	@go fmt ./...
 
 lint:
-	@golangci-lint run
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run; \
+	elif [ -x "$$(go env GOPATH)/bin/golangci-lint" ]; then \
+		"$$(go env GOPATH)/bin/golangci-lint" run; \
+	else \
+		echo "golangci-lint not found (run 'make dev-setup')"; \
+		exit 1; \
+	fi
 
 cfn-lint: ## Lint CloudFormation templates (requires cfn-lint)
 	@echo "==> Linting CloudFormation templates"
