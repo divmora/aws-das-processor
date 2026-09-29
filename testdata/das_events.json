@@ -1,0 +1,53 @@
+{
+  "databaseActivityEventList": [
+    {
+      "type": "heartbeat"
+    },
+    {
+      "type": "activity",
+      "logTime": "2026-09-29 12:00:00.000",
+      "statementId": 1001,
+      "substatementId": 0,
+      "objectType": "TABLE",
+      "command": "SELECT",
+      "objectName": "users",
+      "databaseName": "production_db",
+      "dbUserName": "app_user",
+      "remoteHost": "10.0.1.45",
+      "sessionId": "sess-998877",
+      "rowCount": 42,
+      "commandText": "SELECT id, name, email FROM users WHERE active = true",
+      "paramList": ["true"],
+      "pid": 12345,
+      "clientApplication": "backend-service",
+      "exitCode": "0",
+      "class": "READ",
+      "serverHost": "ip-10-0-2-10",
+      "startTime": "2026-09-29 12:00:00.000",
+      "errorMessage": ""
+    },
+    {
+      "type": "activity",
+      "logTime": "2026-09-29 12:00:01.000",
+      "statementId": 1002,
+      "substatementId": 0,
+      "objectType": "TABLE",
+      "command": "UPDATE",
+      "objectName": "users",
+      "databaseName": "production_db",
+      "dbUserName": "admin",
+      "remoteHost": "10.0.1.50",
+      "sessionId": "sess-112233",
+      "rowCount": 1,
+      "commandText": "UPDATE users SET active = false WHERE id = 123",
+      "paramList": ["false", "123"],
+      "pid": 12346,
+      "clientApplication": "admin-portal",
+      "exitCode": "0",
+      "class": "WRITE",
+      "serverHost": "ip-10-0-2-10",
+      "startTime": "2026-09-29 12:00:01.000",
+      "errorMessage": ""
+    }
+  ]
+}

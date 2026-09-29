@@ -80,12 +80,14 @@ func EvaluateFilter(record map[string]interface{}, query map[string]interface{})
 			_, exists := record[dim]
 			return exists
 		}
+		return false
 	case "selector":
 		dim, dimOk := query["dimension"].(string)
 		val, valOk := query["value"]
 		if dimOk && valOk {
 			return record[dim] == val
 		}
+		return false
 	case "and":
 		if fields, ok := query["fields"].([]interface{}); ok {
 			for _, f := range fields {
