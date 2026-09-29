@@ -9,3 +9,8 @@ on:
 jobs:
   ci:
     uses: divmora/.github/.github/workflows/go-ci.yml@main
+
+  cfn-ci:
+    uses: divmora/.github/.github/workflows/cfn-ci.yml@main
+    with:
+      template-directory: 'deploy/cloudformation'
