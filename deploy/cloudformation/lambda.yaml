@@ -140,6 +140,8 @@ Resources:
       FunctionName: !Ref ProcessorFunction
       BatchSize: 10
       Enabled: true
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
 
 Outputs:
   DestinationBucketName:
