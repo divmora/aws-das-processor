@@ -1,0 +1,32 @@
+# Git & CI
+.git
+.gitignore
+.github
+
+# Documentation
+*.md
+
+# Secrets & Environment
+.env*
+*.pem
+*.key
+
+# Build Artifacts & Binaries
+bin/
+dist/
+tmp/
+app
+
+# Testing & Coverage
+coverage/
+*.cov
+*.test
+
+# Editor & OS Artifacts
+.idea/
+.vscode/
+.DS_Store
+
+# Docker
+Dockerfile*
+.dockerignore
