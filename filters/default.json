@@ -1,4 +1,11 @@
 {
+  "name": "default",
+  "enabled": true,
   "drop": [],
-  "query": {}
+  "query": {},
+  "output": {
+    "format": "hive",
+    "prefix": "das",
+    "include_filter": false
+  }
 }

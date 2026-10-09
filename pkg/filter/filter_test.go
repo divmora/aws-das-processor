@@ -1,4 +1,4 @@
-package main
+package filter
 
 import (
 	"os"
@@ -321,7 +321,6 @@ func TestEvaluateFilter_Contains(t *testing.T) {
 }
 
 func TestLoadFilterConfig(t *testing.T) {
-	// Create temp directory for testing filters
 	tmpDir := t.TempDir()
 	origWd, err := os.Getwd()
 	if err != nil {
@@ -345,7 +344,7 @@ func TestLoadFilterConfig(t *testing.T) {
 		t.Errorf("expected empty config on missing filter")
 	}
 
-	// 2. Load JSON filter
+	// 2. Load JSON filter with Output configuration
 	filtersDir := filepath.Join(tmpDir, "filters")
 	if err := os.MkdirAll(filtersDir, 0755); err != nil {
 		t.Fatalf("failed to mkdir filters: %v", err)
@@ -353,7 +352,12 @@ func TestLoadFilterConfig(t *testing.T) {
 
 	jsonContent := []byte(`{
 		"drop": ["paramList", "errorMessage"],
-		"query": {"type": "selector", "dimension": "command", "value": "SELECT"}
+		"query": {"type": "selector", "dimension": "command", "value": "SELECT"},
+		"output": {
+			"format": "hive",
+			"prefix": "analytics",
+			"include_filter": false
+		}
 	}`)
 	if err := os.WriteFile(filepath.Join(filtersDir, "custom.json"), jsonContent, 0644); err != nil {
 		t.Fatalf("failed to write custom.json: %v", err)
@@ -369,14 +373,21 @@ func TestLoadFilterConfig(t *testing.T) {
 	if cfg.Query["type"] != "selector" {
 		t.Errorf("unexpected Query type: %v", cfg.Query["type"])
 	}
+	if cfg.Output == nil || cfg.Output.Format != "hive" || cfg.Output.Prefix == nil || *cfg.Output.Prefix != "analytics" || cfg.Output.IncludeFilter != false {
+		t.Errorf("unexpected Output config from JSON: %+v", cfg.Output)
+	}
 
-	// 3. Load YAML filter
+	// 3. Load YAML filter with Output configuration
 	yamlContent := []byte(`
 drop:
   - clientApplication
 query:
   type: dimensionExists
   dimension: objectName
+output:
+  format: date
+  prefix: data-lake
+  include_filter: true
 `)
 	if err := os.WriteFile(filepath.Join(filtersDir, "audit.yaml"), yamlContent, 0644); err != nil {
 		t.Fatalf("failed to write audit.yaml: %v", err)
@@ -388,6 +399,9 @@ query:
 	}
 	if len(cfg.Drop) != 1 || cfg.Drop[0] != "clientApplication" {
 		t.Errorf("unexpected Drop fields from YAML: %+v", cfg.Drop)
+	}
+	if cfg.Output == nil || cfg.Output.Format != "date" || cfg.Output.Prefix == nil || *cfg.Output.Prefix != "data-lake" || cfg.Output.IncludeFilter != true {
+		t.Errorf("unexpected Output config from YAML: %+v", cfg.Output)
 	}
 
 	// 4. Fallback to default.json
@@ -420,5 +434,202 @@ query:
 	_, err = LoadFilterConfig("malformed")
 	if err == nil {
 		t.Errorf("expected error loading malformed yaml, got nil")
+	}
+}
+
+func TestMatchPattern(t *testing.T) {
+	tests := []struct {
+		pattern string
+		target  string
+		want    bool
+	}{
+		{"*", "anything", true},
+		{"*", "", true},
+		{"exact-match", "exact-match", true},
+		{"exact-match", "EXACT-MATCH", true},
+		{"cluster-*", "cluster-EXAMPLE1234567890ABCDEF", true},
+		{"cluster-*", "db-123", false},
+		{"*EXAMPLE*", "cluster-EXAMPLE1234567890ABCDEF", true},
+		{"firehose/*", "firehose/cluster-XYZ/2026/10/01/file.json", true},
+		{"firehose/", "firehose/cluster-XYZ/2026/10/01/file.json", true},
+		{"*/cluster-XYZ/*", "AWSLogs/123/cluster-XYZ/data.json", true},
+		{"*.parquet", "data.parquet", true},
+		{"*.parquet", "data.json", false},
+		{"item-?", "item-1", true},
+		{"item-?", "item-12", false},
+		{"cluster-[123]", "cluster-[123]", true}, // escaped regex bracket
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pattern+"_"+tt.target, func(t *testing.T) {
+			got := MatchPattern(tt.pattern, tt.target)
+			if got != tt.want {
+				t.Errorf("MatchPattern(%q, %q) = %v, want %v", tt.pattern, tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchConfig_Matches(t *testing.T) {
+	var nilConfig *MatchConfig
+	if nilConfig.Matches("cluster-1", "path/file.json") {
+		t.Errorf("expected nil MatchConfig to return false")
+	}
+
+	emptyConfig := &MatchConfig{}
+	if emptyConfig.Matches("cluster-1", "path/file.json") {
+		t.Errorf("expected empty MatchConfig to return false")
+	}
+	if emptyConfig.HasCriteria() {
+		t.Errorf("expected empty MatchConfig to have no criteria")
+	}
+
+	clusterOnly := &MatchConfig{
+		Clusters: []string{"cluster-PROD*", "cluster-STG"},
+	}
+	if !clusterOnly.HasCriteria() {
+		t.Errorf("expected clusterOnly to have criteria")
+	}
+	if !clusterOnly.Matches("cluster-PROD-01", "any/path.json") {
+		t.Errorf("expected cluster-PROD-01 to match")
+	}
+	if !clusterOnly.Matches("cluster-STG", "any/path.json") {
+		t.Errorf("expected cluster-STG to match")
+	}
+	if clusterOnly.Matches("cluster-DEV", "any/path.json") {
+		t.Errorf("expected cluster-DEV not to match")
+	}
+
+	pathOnly := &MatchConfig{
+		Paths: []string{"firehose/*", "custom-prefix/*"},
+	}
+	if !pathOnly.Matches("any-cluster", "firehose/cluster-1/file.json") {
+		t.Errorf("expected firehose path to match")
+	}
+	if pathOnly.Matches("any-cluster", "AWSLogs/cluster-1/file.json") {
+		t.Errorf("expected AWSLogs path not to match")
+	}
+
+	both := &MatchConfig{
+		Clusters: []string{"cluster-PROD"},
+		Paths:    []string{"firehose/*"},
+	}
+	if !both.Matches("cluster-PROD", "firehose/cluster-PROD/file.json") {
+		t.Errorf("expected both to match when cluster and path both match")
+	}
+	if both.Matches("cluster-PROD", "AWSLogs/cluster-PROD/file.json") {
+		t.Errorf("expected both not to match when path does not match")
+	}
+	if both.Matches("cluster-DEV", "firehose/cluster-DEV/file.json") {
+		t.Errorf("expected both not to match when cluster does not match")
+	}
+}
+
+func TestLoadAllFilterConfigs(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Empty dir returns empty slice
+	configs, err := LoadAllFilterConfigs(tmpDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(configs) != 0 {
+		t.Errorf("expected 0 configs, got %d", len(configs))
+	}
+
+	// Non-existent dir returns empty slice and nil error
+	configs, err = LoadAllFilterConfigs(filepath.Join(tmpDir, "does-not-exist"))
+	if err != nil || len(configs) != 0 {
+		t.Fatalf("expected nil error and 0 configs for non-existent dir, got: %v, len: %d", err, len(configs))
+	}
+
+	// Write filter files: json, yaml, yml, and an ignored txt file
+	os.WriteFile(filepath.Join(tmpDir, "b-compliance.yaml"), []byte("name: compliance\ndrop:\n  - mac"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "a-audit.json"), []byte(`{"name": "audit", "drop": []}`), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "c-security.yml"), []byte("name: security\ndrop: []"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "readme.txt"), []byte("ignore me"), 0644)
+
+	configs, err = LoadAllFilterConfigs(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to load configs: %v", err)
+	}
+	if len(configs) != 3 {
+		t.Fatalf("expected 3 configs, got %d", len(configs))
+	}
+	// Verify sorting order: a-audit, b-compliance, c-security
+	if configs[0].Name != "audit" || configs[1].Name != "compliance" || configs[2].Name != "security" {
+		t.Errorf("unexpected loaded order: %s, %s, %s", configs[0].Name, configs[1].Name, configs[2].Name)
+	}
+}
+
+func TestResolveFilters(t *testing.T) {
+	boolFalse := false
+	boolTrue := true
+
+	complianceCfg := &FilterConfig{
+		Name: "compliance",
+		Match: &MatchConfig{
+			Clusters: []string{"cluster-PROD*"},
+		},
+	}
+	securityCfg := &FilterConfig{
+		Name: "security",
+		Match: &MatchConfig{
+			Clusters: []string{"cluster-PROD-01"},
+			Paths:    []string{"firehose/*"},
+		},
+	}
+	globalCfg := &FilterConfig{
+		Name: "global",
+		Match: &MatchConfig{
+			Clusters: []string{"*"},
+		},
+	}
+	disabledCfg := &FilterConfig{
+		Name:    "disabled-audit",
+		Enabled: &boolFalse,
+		Match: &MatchConfig{
+			Clusters: []string{"*"},
+		},
+	}
+	defaultCfg := &FilterConfig{
+		Name:    "default",
+		Enabled: &boolTrue,
+		Match:   nil, // fallback
+	}
+
+	configs := []*FilterConfig{complianceCfg, securityCfg, globalCfg, disabledCfg, defaultCfg}
+
+	// 1. Multiple matching filters (disabled filter must be ignored)
+	// For cluster-PROD-01 and firehose path: compliance, security, and global all match!
+	res := ResolveFilters(configs, "cluster-PROD-01", "firehose/cluster-PROD-01/data.json")
+	if len(res) != 3 {
+		t.Fatalf("expected 3 filters to match, got %d", len(res))
+	}
+	for _, f := range res {
+		if f.Name == "disabled-audit" {
+			t.Errorf("disabled filter should not be matched")
+		}
+	}
+
+	// 2. Single match
+	// For cluster-DEV and custom path: only global matches!
+	res = ResolveFilters(configs, "cluster-DEV", "custom/data.json")
+	if len(res) != 1 || res[0].Name != "global" {
+		t.Fatalf("expected only global filter to match, got %+v", res)
+	}
+
+	// 3. Fallback to default when no filters with criteria match
+	noGlobalConfigs := []*FilterConfig{complianceCfg, securityCfg, defaultCfg}
+	res = ResolveFilters(noGlobalConfigs, "cluster-UNKNOWN", "custom/data.json")
+	if len(res) != 1 || res[0].Name != "default" {
+		t.Fatalf("expected fallback to default filter, got %+v", res)
+	}
+
+	// 4. No matches and no fallback
+	onlyProdConfigs := []*FilterConfig{complianceCfg}
+	res = ResolveFilters(onlyProdConfigs, "cluster-DEV", "custom/data.json")
+	if len(res) != 0 {
+		t.Errorf("expected 0 matches when no filter matches and no default exists, got %d", len(res))
 	}
 }

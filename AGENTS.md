@@ -12,7 +12,7 @@ Welcome to the **AWS Database Activity Streams (DAS) Processor** repository. The
 1. **S3 Event Notification**: RDS writes encrypted, zlib-compressed DAS records to a source S3 bucket.
 2. **Fanout via SNS & SQS**: An S3 bucket notification publishes an event to an SNS topic, which fans out to an SQS queue.
 3. **Lambda Trigger**: AWS Lambda polls the SQS queue using partial batch failure handling (`ReportBatchItemFailures`).
-4. **Envelope Decryption**: Lambda downloads the raw log chunk from S3 and decrypts the encrypted payload using AWS KMS and the AWS Encryption SDK for Go (`github.com/aws/aws-encryption-sdk/releases/go/encryption-sdk`) with the RDS Resource ID encryption context.
+4. **Envelope Decryption**: Lambda downloads the raw log chunk from S3 and decrypts the encrypted payload using AWS KMS and the AWS Encryption SDK for Go (`github.com/aws/aws-encryption-sdk/releases/go/encryption-sdk`) with the RDS Resource ID encryption context (dynamically extracted from the S3 key path or configured via `DAS_RDS_RESOURCE_ID`).
 5. **Decompression & Parsing**: The decrypted stream is decompressed via `compress/zlib` and parsed into structured JSON database activity records.
 6. **Filtering Engine**: Events are evaluated against configurable filter rules (loaded from YAML configs in `filters/` or environment definitions) to drop noise (e.g. heartbeat queries, drop fields, user/dimension selectors).
 7. **Parquet Serialization & S3 Sink**: Retained records are serialized into compressed Apache Parquet format using `parquet-go` and written back to an analytical S3 destination bucket partitioned by date and cluster identifier.

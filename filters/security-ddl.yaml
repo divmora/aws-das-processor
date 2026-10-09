@@ -1,0 +1,14 @@
+name: security-ddl
+enabled: true
+match:
+  clusters:
+    - "cluster-*"
+drop: []
+query:
+  type: selector
+  dimension: command
+  value: DROP
+output:
+  format: date
+  prefix: security-audit
+  include_filter: true

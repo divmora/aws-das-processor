@@ -3,7 +3,7 @@
 PORT ?= 8080
 
 build:
-	@go build -o bin/aws-das-processor ./...
+	@go build -o bin/aws-das-processor ./cmd/aws-das-processor
 
 test:
 	@go test -v ./...
@@ -56,7 +56,7 @@ dev-setup:
 
 lambda-package:
 	@mkdir -p bin
-	@GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/bootstrap main.go filter.go
+	@GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/bootstrap ./cmd/aws-das-processor
 	@cd bin && zip -j aws-das-processor.zip bootstrap
 	@echo "Lambda package: bin/aws-das-processor.zip"
 

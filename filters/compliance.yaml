@@ -1,0 +1,14 @@
+name: compliance
+enabled: true
+match:
+  clusters:
+    - "cluster-*"
+  paths:
+    - "firehose/*"
+drop:
+  - clientMac
+query: {}
+output:
+  format: hive
+  prefix: das
+  include_filter: true

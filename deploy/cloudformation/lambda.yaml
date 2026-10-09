@@ -20,16 +20,12 @@ Parameters:
 
   RdsResourceId:
     Type: String
-    Description: 'RDS Resource ID for the encryption context (DAS_RDS_RESOURCE_ID).'
+    Default: ''
+    Description: 'Optional fallback RDS Resource ID for the encryption context (DAS_RDS_RESOURCE_ID). Dynamically extracted from S3 key if present.'
 
   LambdaImageUri:
     Type: String
     Description: 'ECR Image URI for the aws-das-processor Lambda function.'
-
-  FilterName:
-    Type: String
-    Default: 'default'
-    Description: 'Name of the JSON DSL filter to apply (DAS_FILTER_NAME).'
 
   LambdaMemorySize:
     Type: Number
@@ -145,7 +141,6 @@ Resources:
       MemorySize: !Ref LambdaMemorySize
       Environment:
         Variables:
-          DAS_FILTER_NAME: !Ref FilterName
           DAS_KMS_REGION_NAME: !Ref AWS::Region
           DAS_RDS_RESOURCE_ID: !Ref RdsResourceId
           # Output bucket for Parquet files

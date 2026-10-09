@@ -215,7 +215,7 @@ graph LR
           </div>
           <h4 class="text-lg font-semibold text-white mb-2">AWS Encryption SDK & KMS</h4>
           <p class="text-gray-400 text-sm leading-relaxed">
-            Performs envelope decryption on raw DAS chunks using the official AWS Encryption SDK for Go (Dafny runtime) verified against the RDS Resource ID encryption context.
+            Performs envelope decryption on raw DAS chunks using the official AWS Encryption SDK for Go (Dafny runtime) verified against the RDS Resource ID encryption context, automatically discovered from S3 object key paths with fallback support.
           </p>
         </div>
 
@@ -233,11 +233,11 @@ graph LR
         <!-- Feature 3 -->
         <div class="glass rounded-xl p-6 border border-gray-800 hover:border-orange-500/40 transition-all">
           <div class="w-10 h-10 rounded-lg bg-cyan-500/10 text-cyan-400 flex items-center justify-center mb-4 text-lg">
-            <i class="fa-solid fa-filter"></i>
+            <i class="fa-solid fa-layer-group"></i>
           </div>
-          <h4 class="text-lg font-semibold text-white mb-2">Declarative Filter DSL</h4>
+          <h4 class="text-lg font-semibold text-white mb-2">Multi-Filter Engine</h4>
           <p class="text-gray-400 text-sm leading-relaxed">
-            Drop high-volume heartbeat queries, strip sensitive compliance fields, and target specific database users/queries with composable AST logic (<code>and</code>, <code>or</code>, <code>not</code>).
+            Evaluates multiple filter profiles concurrently against the same decrypted payload in memory. Downloads and decrypts KMS envelopes <strong>once</strong>, generating distinct Parquet analytical datasets with zero redundant KMS costs.
           </p>
         </div>
 
@@ -300,14 +300,14 @@ graph LR
             </thead>
             <tbody class="divide-y divide-gray-800 text-gray-300">
               <tr class="hover:bg-gray-800/30 transition-colors">
-                <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_FILTER_NAME</td>
-                <td class="py-4 px-6 font-mono text-gray-400">""</td>
-                <td class="py-4 px-6">Name of the filter profile in <code>filters/</code> (e.g. <code>default</code> loads <code>filters/default.yaml</code> or <code>.json</code>).</td>
+                <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_FILTERS_DIR</td>
+                <td class="py-4 px-6 font-mono text-gray-400">"filters"</td>
+                <td class="py-4 px-6">Directory path containing filter rule files (<code>.yaml</code>, <code>.yml</code>, <code>.json</code>). Filters are automatically discovered and matched in memory against incoming event cluster IDs and S3 paths.</td>
               </tr>
               <tr class="hover:bg-gray-800/30 transition-colors">
                 <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_RDS_RESOURCE_ID</td>
                 <td class="py-4 px-6 font-mono text-gray-400">""</td>
-                <td class="py-4 px-6">The RDS Resource ID (e.g. <code>cluster-ABC123XYZ</code>). Required for AWS KMS encryption context matching.</td>
+                <td class="py-4 px-6">Fallback RDS Resource ID (e.g. <code>cluster-EXAMPLE1234567890ABCDEF</code>). Automatically extracted from S3 object key path prefixes (<code>cluster-*</code> or <code>db-*</code>) if present.</td>
               </tr>
               <tr class="hover:bg-gray-800/30 transition-colors">
                 <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_KMS_REGION_NAME</td>
@@ -317,7 +317,22 @@ graph LR
               <tr class="hover:bg-gray-800/30 transition-colors">
                 <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_OUTPUT_BUCKET</td>
                 <td class="py-4 px-6 font-mono text-gray-400">Source Bucket</td>
-                <td class="py-4 px-6">Analytical destination S3 bucket for writing processed Parquet files. Defaults to source bucket if unset.</td>
+                <td class="py-4 px-6">Analytical destination S3 bucket for writing processed Parquet files (defaults to the incoming source bucket if unset).</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_OUTPUT_FORMAT</td>
+                <td class="py-4 px-6 font-mono text-gray-400">hive</td>
+                <td class="py-4 px-6">Partitioning layout override (<code>hive</code>, <code>date</code>, <code>mirrored</code>). Defaults to filter file <code>output.format</code>.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_OUTPUT_PREFIX</td>
+                <td class="py-4 px-6 font-mono text-gray-400">das</td>
+                <td class="py-4 px-6">Base prefix path in destination bucket. Defaults to filter file <code>output.prefix</code>.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_OUTPUT_INCLUDE_FILTER</td>
+                <td class="py-4 px-6 font-mono text-gray-400">false</td>
+                <td class="py-4 px-6">Whether to include <code>/&lt;filter-name&gt;/</code> in destination S3 paths (<code>true</code> / <code>false</code>). Recommended <code>true</code> when running multiple filters.</td>
               </tr>
             </tbody>
           </table>
@@ -382,30 +397,44 @@ graph LR
           <div class="bg-gray-800/80 px-4 py-3 border-b border-gray-700 flex items-center justify-between">
             <div class="flex items-center gap-2 text-xs font-mono text-gray-300">
               <i class="fa-solid fa-code text-orange-400"></i>
-              <span>filters/drop-heartbeats.yaml</span>
+              <span>filters/compliance.yaml</span>
             </div>
             <span class="text-[11px] text-gray-400 uppercase tracking-wider font-semibold">YAML</span>
           </div>
-          <pre class="p-5 text-sm font-mono text-gray-300 overflow-x-auto leading-relaxed"><code># Drop verbose audit fields
-drop:
-  - clientApplication
-  - serverHost
+          <pre class="p-5 text-sm font-mono text-gray-300 overflow-x-auto leading-relaxed"><code>name: compliance
+enabled: true # Set to false to disable without deleting file
 
-# Drop internal RDS heartbeat queries
+# Dynamic routing & matching criteria
+match:
+  clusters:
+    - "cluster-EXAMPLE1234567890ABCDEF"
+    - "cluster-PROD-*"
+  paths:
+    - "firehose/*"
+
+# Field-level redaction
+drop:
+  - clientMac
+  - clientApplication
+
+# Drop noise queries (e.g. internal heartbeats)
 query:
   type: not
   field:
     type: or
     fields:
       - type: selector
-        dimension: dbUser
+        dimension: dbUserName
         value: rdsadmin
       - type: contains
         dimension: commandText
         value: "SELECT 1"
-      - type: contains
-        dimension: commandText
-        value: "rds_heartbeat"</code></pre>
+
+# Analytical destination partitioning
+output:
+  format: hive          # hive | date | mirrored
+  prefix: das
+  include_filter: true  # das/compliance/cluster=.../</code></pre>
         </div>
       </div>
     </div>

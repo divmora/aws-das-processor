@@ -3,7 +3,7 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bootstrap main.go filter.go
+RUN GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bootstrap ./cmd/aws-das-processor
 
 FROM public.ecr.aws/lambda/provided:al2023
 COPY --from=builder /app/bootstrap ${LAMBDA_RUNTIME_DIR}
