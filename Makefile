@@ -1,4 +1,6 @@
-.PHONY: build clean test test-coverage dev-setup fmt lint cfn-lint lambda-package docker-build docker-build-multiarch
+.PHONY: build clean test test-coverage dev-setup fmt lint cfn-lint lambda-package docker-build docker-build-multiarch docs-serve
+
+PORT ?= 8080
 
 build:
 	@go build -o bin/aws-das-processor ./...
@@ -56,4 +58,9 @@ lambda-package:
 	@mkdir -p bin
 	@GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/bootstrap main.go filter.go
 	@cd bin && zip -j aws-das-processor.zip bootstrap
-	@echo "Lambda package: bin/aws-das-processor.zip" 
+	@echo "Lambda package: bin/aws-das-processor.zip"
+
+docs-serve:
+	@echo "Serving documentation at http://localhost:$(PORT)..."
+	@python3 -m http.server $(PORT) --directory docs
+ 

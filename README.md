@@ -110,6 +110,7 @@ The Lambda execution role requires the following least-privilege IAM policy perm
 - **Lint CloudFormation**: `make cfn-lint`
 - **Package Lambda zip bundle**: `make lambda-package`
 - **Build Docker container**: `make docker-build`
+- **Serve documentation locally**: `make docs-serve` (serves `docs/` at `http://localhost:8080`)
 
 ---
 

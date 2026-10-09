@@ -23,6 +23,7 @@ Thank you for your interest in contributing to the **AWS Database Activity Strea
 - `make cfn-lint`: Lint CloudFormation deployment templates
 - `make lambda-package`: Build and package the production Lambda zip bundle
 - `make docker-build`: Build the container image locally
+- `make docs-serve`: Serve documentation locally on `http://localhost:8080`
 - `make clean`: Clean up compiled binaries and build artifacts
 
 ---

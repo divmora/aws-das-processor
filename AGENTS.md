@@ -80,4 +80,5 @@ Always verify changes locally before finalizing tasks:
 | `make cfn-lint` | Lint CloudFormation templates (`cfn-lint deploy/cloudformation/*.yaml`) |
 | `make lambda-package` | Build Linux/amd64 bootstrap binary and zip Lambda package |
 | `make docker-build` | Build container image locally |
+| `make docs-serve` | Serve documentation locally on port 8080 |
 | `make clean` | Clean up build artifacts |

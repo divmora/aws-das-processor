@@ -3,58 +3,529 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AWS DAS Processor — Documentation</title>
-  <meta name="description" content="AWS Database Activity Stream log processor in Go. Consumes SQS events, decrypts payloads via KMS, and exports to Parquet in S3.">
+  <title>AWS DAS Processor — Documentation & Architecture Guide</title>
+  <meta name="description" content="High-performance Go AWS Lambda consumer that decrypts, decompresses, filters, and converts AWS RDS Database Activity Streams (DAS) into compressed Apache Parquet format in S3.">
+  <meta name="keywords" content="AWS, RDS, Database Activity Streams, DAS, Lambda, SQS, KMS, Parquet, Go, Aurora, PostgreSQL, MySQL, Security, Audit, Compliance, DIVMORA">
+
+  <!-- Tailwind CSS & FontAwesome -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <!-- Mermaid.js -->
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+
   <script>
     mermaid.initialize({ startOnLoad: true, theme: 'dark' });
     tailwind.config = {
       darkMode: 'class',
-      theme: { extend: { fontFamily: { sans: ['Inter', 'sans-serif'] } } }
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['Fira Code', 'monospace'],
+          },
+          colors: {
+            brand: {
+              400: '#fb923c',
+              500: '#f97316',
+              600: '#ea580c',
+              700: '#c2410c',
+            },
+            accent: {
+              cyan: '#06b6d4',
+              emerald: '#10b981',
+              violet: '#8b5cf6',
+              amber: '#f59e0b',
+            },
+            dark: {
+              bg: '#0b0f19',
+              card: '#111827',
+              cardHover: '#161f33',
+              border: '#1f2937',
+              muted: '#374151',
+            }
+          }
+        }
+      }
     }
   </script>
   <style>
-    body { background: #0f172a; color: #f8fafc; }
-    .glass {
-      background: rgba(30, 41, 59, 0.6);
-      backdrop-filter: blur(12px);
-      border: 1px solid rgba(255, 255, 255, 0.08);
+    body { font-family: 'Inter', sans-serif; background-color: #0b0f19; color: #f8fafc; }
+    pre, code { font-family: 'Fira Code', monospace; }
+    .glass { background: rgba(17, 24, 39, 0.85); backdrop-filter: blur(14px); }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #0b0f19; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+    .glow-orange { box-shadow: 0 0 50px -10px rgba(249, 115, 22, 0.3); }
+    .glow-cyan { box-shadow: 0 0 50px -10px rgba(6, 182, 212, 0.25); }
+    .tab-btn.active {
+      background-color: #ea580c;
+      color: #ffffff;
+      border-color: #f97316;
     }
-    .glow { box-shadow: 0 0 40px -10px rgba(99, 102, 241, 0.4); }
   </style>
 </head>
-<body class="antialiased selection:bg-indigo-500/30 min-h-screen flex flex-col">
+<body class="antialiased selection:bg-orange-500/30 min-h-screen flex flex-col">
+
+  <!-- Navbar -->
   <nav class="fixed top-0 w-full z-50 glass border-b border-gray-800">
     <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-tr from-orange-500 to-amber-400 flex items-center justify-center font-bold text-white shadow-lg">
+          <i class="fa-solid fa-database text-sm"></i>
+        </div>
         <span class="font-bold text-lg tracking-tight text-white">AWS DAS Processor</span>
+        <span class="hidden sm:inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold bg-orange-500/10 text-orange-400 border border-orange-500/20">BSL 1.1</span>
       </div>
-      <div class="flex gap-6 text-sm font-medium text-gray-300">
-        <a href="https://github.com/divmora/aws-das-processor" target="_blank" class="hover:text-white transition-colors">GitHub</a>
+
+      <div class="hidden md:flex items-center gap-6 text-sm font-medium text-gray-300">
+        <a href="#overview" class="hover:text-orange-400 transition-colors">Overview</a>
+        <a href="#architecture" class="hover:text-orange-400 transition-colors">Architecture</a>
+        <a href="#features" class="hover:text-orange-400 transition-colors">Features</a>
+        <a href="#config" class="hover:text-orange-400 transition-colors">Configuration</a>
+        <a href="#filtering" class="hover:text-orange-400 transition-colors">Filter DSL</a>
+        <a href="#deployment" class="hover:text-orange-400 transition-colors">Deployment</a>
+        <a href="#licensing" class="hover:text-orange-400 transition-colors">Licensing</a>
+      </div>
+
+      <div class="flex items-center gap-3">
+        <a href="https://github.com/divmora/aws-das-processor" target="_blank" class="flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold text-gray-200 bg-gray-800 hover:bg-gray-700 border border-gray-700 transition-all">
+          <i class="fa-brands fa-github text-sm"></i>
+          <span>GitHub</span>
+        </a>
       </div>
     </div>
   </nav>
 
-  <main class="flex-1 pt-32 pb-24">
-    <div class="max-w-4xl mx-auto px-6 text-center mb-16">
-      <h1 class="text-4xl md:text-5xl font-bold tracking-tight mb-6 leading-tight bg-clip-text text-transparent bg-gradient-to-r from-orange-400 via-yellow-400 to-red-400">
-        Database Activity Stream Processor
-      </h1>
-      <p class="text-xl text-gray-400 max-w-2xl mx-auto leading-relaxed">
-        High-performance Go Lambda function that consumes AWS Database Activity Stream (DAS) events via SQS, decrypts payloads via AWS KMS, applies JSON DSL filtering, and exports the stream as Snappy-compressed Parquet files to S3.
-      </p>
-    </div>
+  <!-- Hero Section -->
+  <header class="pt-32 pb-20 px-6 relative overflow-hidden">
+    <div class="absolute inset-0 bg-[radial-gradient(circle_at_top,_var(--tw-gradient-stops))] from-orange-500/10 via-transparent to-transparent pointer-events-none"></div>
+    <div class="max-w-5xl mx-auto text-center relative z-10">
+      
+      <!-- Badges -->
+      <div class="flex flex-wrap items-center justify-center gap-2 mb-8">
+        <a href="https://github.com/divmora/aws-das-processor/releases" target="_blank">
+          <img src="https://img.shields.io/github/v/release/divmora/aws-das-processor?logo=github&color=orange" alt="Release">
+        </a>
+        <a href="https://github.com/divmora/.github/blob/main/LICENSING.md" target="_blank">
+          <img src="https://img.shields.io/badge/License-BSL_1.1-blue.svg" alt="License: BSL 1.1">
+        </a>
+        <a href="https://github.com/divmora/aws-das-processor/actions" target="_blank">
+          <img src="https://github.com/divmora/aws-das-processor/actions/workflows/ci.yml/badge.svg" alt="CI/CD">
+        </a>
+        <a href="https://go.dev/" target="_blank">
+          <img src="https://img.shields.io/github/go-mod/go-version/divmora/aws-das-processor" alt="Go Version">
+        </a>
+        <a href="SECURITY.md">
+          <img src="https://img.shields.io/badge/Security-Policy-green.svg" alt="Security Policy">
+        </a>
+      </div>
 
-    <div class="max-w-6xl mx-auto px-6 mb-24">
-      <div class="glass rounded-3xl p-8 glow relative overflow-hidden">
-        <h2 class="text-2xl font-bold mb-6 text-center">Architecture Diagram</h2>
+      <h1 class="text-4xl sm:text-5xl md:text-6xl font-extrabold tracking-tight mb-6 leading-tight">
+        AWS Database Activity Streams <br>
+        <span class="bg-clip-text text-transparent bg-gradient-to-r from-orange-400 via-amber-300 to-yellow-400">
+          Decryption, Filtering & Parquet Sinking
+        </span>
+      </h1>
+
+      <p class="text-lg sm:text-xl text-gray-300 max-w-3xl mx-auto leading-relaxed mb-10">
+        A high-performance Go AWS Lambda consumer that ingests encrypted RDS Database Activity Streams, decrypts envelope payloads using AWS KMS, filters noise via a declarative YAML DSL, and writes compressed Apache Parquet directly to analytical S3 buckets.
+      </p>
+
+      <div class="flex flex-wrap justify-center gap-4 text-sm font-semibold">
+        <a href="#deployment" class="px-6 py-3 rounded-xl bg-orange-600 hover:bg-orange-500 text-white shadow-lg shadow-orange-600/30 transition-all flex items-center gap-2">
+          <i class="fa-solid fa-cloud-arrow-up"></i>
+          <span>Deploy with CloudFormation</span>
+        </a>
+        <a href="#filtering" class="px-6 py-3 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 transition-all flex items-center gap-2">
+          <i class="fa-solid fa-filter"></i>
+          <span>Explore Filter Rules</span>
+        </a>
+        <a href="https://github.com/divmora/aws-das-processor" target="_blank" class="px-6 py-3 rounded-xl bg-gray-900 hover:bg-gray-800 text-gray-300 border border-gray-800 transition-all flex items-center gap-2">
+          <i class="fa-brands fa-github"></i>
+          <span>View Source Code</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Architecture Section -->
+  <section id="architecture" class="py-16 px-6 border-t border-gray-800/60 bg-gray-900/30">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-12">
+        <h2 class="text-xs font-bold uppercase tracking-widest text-orange-400 mb-2">Data Flow & Processing</h2>
+        <h3 class="text-3xl font-bold tracking-tight text-white">End-to-End Ingestion Pipeline</h3>
+        <p class="text-gray-400 max-w-2xl mx-auto mt-2">
+          From RDS envelope encryption to analytical Parquet tables, optimized for memory efficiency and SQS partial batch retries.
+        </p>
+      </div>
+
+      <!-- Mermaid Dataflow -->
+      <div class="glass rounded-2xl p-6 border border-gray-800 glow-orange mb-12">
+        <div class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+          <i class="fa-solid fa-diagram-project text-orange-400"></i>
+          <span>Event Flow Diagram</span>
+        </div>
+        <pre class="mermaid text-center">
+graph LR
+    RDS[(Amazon RDS / Aurora)] -->|Writes encrypted DAS chunk| S3Source[(Source S3 Bucket)]
+    S3Source -->|S3 Event Notification| SNS[SNS Topic]
+    SNS -->|Fanout Subscription| SQS[SQS Queue]
+    SQS -->|Partial Batch Polling| Lambda[Go Lambda Processor]
+    Lambda -->|KMS Decrypt Context| KMS[AWS KMS]
+    Lambda -->|zlib Decompress| Decompress[Decompression]
+    Decompress -->|JSON Records| Filter[Declarative YAML Filter DSL]
+    Filter -->|Retained Events| Parquet[Parquet-Go Serialization]
+    Parquet -->|Snappy-compressed Parquet| S3Dest[(Analytics S3 Sink)]
+        </pre>
+      </div>
+
+      <!-- Architecture Visual -->
+      <div class="glass rounded-2xl p-6 border border-gray-800 glow-cyan">
+        <div class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+          <i class="fa-solid fa-layer-group text-cyan-400"></i>
+          <span>Cloud Component Topology</span>
+        </div>
         <div class="flex justify-center">
-          <img src="assets/architecture.png" alt="Architecture" class="w-full h-auto rounded-2xl relative z-10 border border-gray-800 shadow-2xl">
+          <img src="assets/architecture.png" alt="aws-das-processor Architecture Diagram" class="w-full h-auto rounded-xl border border-gray-800 shadow-2xl">
         </div>
       </div>
     </div>
-  </main>
+  </section>
+
+  <!-- Core Features Grid -->
+  <section id="features" class="py-20 px-6">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-16">
+        <h2 class="text-xs font-bold uppercase tracking-widest text-orange-400 mb-2">Key Capabilities</h2>
+        <h3 class="text-3xl font-bold tracking-tight text-white">Engineered for Enterprise Compliance</h3>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <!-- Feature 1 -->
+        <div class="glass rounded-xl p-6 border border-gray-800 hover:border-orange-500/40 transition-all">
+          <div class="w-10 h-10 rounded-lg bg-orange-500/10 text-orange-400 flex items-center justify-center mb-4 text-lg">
+            <i class="fa-solid fa-key"></i>
+          </div>
+          <h4 class="text-lg font-semibold text-white mb-2">AWS Encryption SDK & KMS</h4>
+          <p class="text-gray-400 text-sm leading-relaxed">
+            Performs envelope decryption on raw DAS chunks using the official AWS Encryption SDK for Go (Dafny runtime) verified against the RDS Resource ID encryption context.
+          </p>
+        </div>
+
+        <!-- Feature 2 -->
+        <div class="glass rounded-xl p-6 border border-gray-800 hover:border-orange-500/40 transition-all">
+          <div class="w-10 h-10 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center mb-4 text-lg">
+            <i class="fa-solid fa-arrows-rotate"></i>
+          </div>
+          <h4 class="text-lg font-semibold text-white mb-2">SQS Partial Batch Retries</h4>
+          <p class="text-gray-400 text-sm leading-relaxed">
+            Implements <code>ReportBatchItemFailures</code>. Successful messages commit immediately; only failed records are redriven, preventing duplicate writes and retry storms.
+          </p>
+        </div>
+
+        <!-- Feature 3 -->
+        <div class="glass rounded-xl p-6 border border-gray-800 hover:border-orange-500/40 transition-all">
+          <div class="w-10 h-10 rounded-lg bg-cyan-500/10 text-cyan-400 flex items-center justify-center mb-4 text-lg">
+            <i class="fa-solid fa-filter"></i>
+          </div>
+          <h4 class="text-lg font-semibold text-white mb-2">Declarative Filter DSL</h4>
+          <p class="text-gray-400 text-sm leading-relaxed">
+            Drop high-volume heartbeat queries, strip sensitive compliance fields, and target specific database users/queries with composable AST logic (<code>and</code>, <code>or</code>, <code>not</code>).
+          </p>
+        </div>
+
+        <!-- Feature 4 -->
+        <div class="glass rounded-xl p-6 border border-gray-800 hover:border-orange-500/40 transition-all">
+          <div class="w-10 h-10 rounded-lg bg-violet-500/10 text-violet-400 flex items-center justify-center mb-4 text-lg">
+            <i class="fa-solid fa-file-excel"></i>
+          </div>
+          <h4 class="text-lg font-semibold text-white mb-2">Compressed Apache Parquet</h4>
+          <p class="text-gray-400 text-sm leading-relaxed">
+            Serializes retained JSON records directly into Snappy-compressed Parquet with columnar layout ready for Amazon Athena, AWS Glue, Snowflake, and BigQuery analytics.
+          </p>
+        </div>
+
+        <!-- Feature 5 -->
+        <div class="glass rounded-xl p-6 border border-gray-800 hover:border-orange-500/40 transition-all">
+          <div class="w-10 h-10 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center mb-4 text-lg">
+            <i class="fa-solid fa-box"></i>
+          </div>
+          <h4 class="text-lg font-semibold text-white mb-2">Multi-Arch Containers</h4>
+          <p class="text-gray-400 text-sm leading-relaxed">
+            Standardized multi-stage Docker builds supporting both <code>linux/amd64</code> and <code>linux/arm64</code> (AWS Graviton) for maximum performance per dollar.
+          </p>
+        </div>
+
+        <!-- Feature 6 (Upcoming) -->
+        <div class="glass rounded-xl p-6 border border-orange-500/30 bg-orange-950/10 hover:border-orange-500/60 transition-all">
+          <div class="w-10 h-10 rounded-lg bg-orange-500/20 text-orange-300 flex items-center justify-center mb-4 text-lg">
+            <i class="fa-solid fa-shield-halved"></i>
+          </div>
+          <div class="flex items-center gap-2 mb-2">
+            <h4 class="text-lg font-semibold text-white">SQL Anomaly Detection</h4>
+            <span class="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-orange-500/20 text-orange-300 border border-orange-500/30">Roadmap</span>
+          </div>
+          <p class="text-gray-400 text-sm leading-relaxed">
+            Upcoming enterprise capability: real-time query fingerprinting, volumetric burst detection, unauthorized DDL/DCL execution tagging, and SQL injection anomaly alerts.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Configuration Table Section -->
+  <section id="config" class="py-16 px-6 border-t border-gray-800/60 bg-gray-900/30">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-12">
+        <h2 class="text-xs font-bold uppercase tracking-widest text-orange-400 mb-2">Environment Configuration</h2>
+        <h3 class="text-3xl font-bold tracking-tight text-white">Runtime Environment Variables</h3>
+      </div>
+
+      <div class="glass rounded-2xl border border-gray-800 overflow-hidden shadow-2xl">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-gray-800/60 text-gray-200 uppercase text-xs tracking-wider border-b border-gray-700">
+              <tr>
+                <th class="py-4 px-6 font-semibold">Variable</th>
+                <th class="py-4 px-6 font-semibold">Default</th>
+                <th class="py-4 px-6 font-semibold">Description</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800 text-gray-300">
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_FILTER_NAME</td>
+                <td class="py-4 px-6 font-mono text-gray-400">""</td>
+                <td class="py-4 px-6">Name of the filter profile in <code>filters/</code> (e.g. <code>default</code> loads <code>filters/default.yaml</code> or <code>.json</code>).</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_RDS_RESOURCE_ID</td>
+                <td class="py-4 px-6 font-mono text-gray-400">""</td>
+                <td class="py-4 px-6">The RDS Resource ID (e.g. <code>cluster-ABC123XYZ</code>). Required for AWS KMS encryption context matching.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_KMS_REGION_NAME</td>
+                <td class="py-4 px-6 font-mono text-gray-400">Current Region</td>
+                <td class="py-4 px-6">AWS Region where the KMS Customer Managed Key (CMK) resides.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_OUTPUT_BUCKET</td>
+                <td class="py-4 px-6 font-mono text-gray-400">Source Bucket</td>
+                <td class="py-4 px-6">Analytical destination S3 bucket for writing processed Parquet files. Defaults to source bucket if unset.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Filter DSL Section -->
+  <section id="filtering" class="py-20 px-6">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-12">
+        <h2 class="text-xs font-bold uppercase tracking-widest text-orange-400 mb-2">Declarative Rules Engine</h2>
+        <h3 class="text-3xl font-bold tracking-tight text-white">YAML Filter DSL Guide</h3>
+        <p class="text-gray-400 max-w-2xl mx-auto mt-2">
+          Configure rule profiles in <code>filters/&lt;name&gt;.yaml</code> to drop noise or isolate security-critical queries.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+        <!-- DSL Rules Overview -->
+        <div class="space-y-4">
+          <div class="glass rounded-xl p-5 border border-gray-800">
+            <h4 class="font-semibold text-white text-base mb-1 flex items-center gap-2">
+              <span class="text-orange-400 font-mono">drop</span> (Field Stripping)
+            </h4>
+            <p class="text-gray-400 text-sm">
+              List of top-level or dimension field keys to strip from the output Parquet record before storage (useful for redacting non-essential telemetry or PII).
+            </p>
+          </div>
+
+          <div class="glass rounded-xl p-5 border border-gray-800">
+            <h4 class="font-semibold text-white text-base mb-1 flex items-center gap-2">
+              <span class="text-cyan-400 font-mono">selector</span> (Equality Match)
+            </h4>
+            <p class="text-gray-400 text-sm">
+              Evaluates if a specific dimension exactly matches a value (e.g., <code>type: "selector", dimension: "dbUser", value: "rdsadmin"</code>).
+            </p>
+          </div>
+
+          <div class="glass rounded-xl p-5 border border-gray-800">
+            <h4 class="font-semibold text-white text-base mb-1 flex items-center gap-2">
+              <span class="text-emerald-400 font-mono">contains</span> (Substring & Array Match)
+            </h4>
+            <p class="text-gray-400 text-sm">
+              Checks whether a string dimension contains a substring, or an array dimension contains an item (e.g. finding heartbeat query text).
+            </p>
+          </div>
+
+          <div class="glass rounded-xl p-5 border border-gray-800">
+            <h4 class="font-semibold text-white text-base mb-1 flex items-center gap-2">
+              <span class="text-violet-400 font-mono">and / or / not</span> (Boolean Combinators)
+            </h4>
+            <p class="text-gray-400 text-sm">
+              Recursively nests sub-expressions to create fine-grained filtering conditions.
+            </p>
+          </div>
+        </div>
+
+        <!-- Code Block -->
+        <div class="glass rounded-2xl border border-gray-800 overflow-hidden shadow-2xl">
+          <div class="bg-gray-800/80 px-4 py-3 border-b border-gray-700 flex items-center justify-between">
+            <div class="flex items-center gap-2 text-xs font-mono text-gray-300">
+              <i class="fa-solid fa-code text-orange-400"></i>
+              <span>filters/drop-heartbeats.yaml</span>
+            </div>
+            <span class="text-[11px] text-gray-400 uppercase tracking-wider font-semibold">YAML</span>
+          </div>
+          <pre class="p-5 text-sm font-mono text-gray-300 overflow-x-auto leading-relaxed"><code># Drop verbose audit fields
+drop:
+  - clientApplication
+  - serverHost
+
+# Drop internal RDS heartbeat queries
+query:
+  type: not
+  field:
+    type: or
+    fields:
+      - type: selector
+        dimension: dbUser
+        value: rdsadmin
+      - type: contains
+        dimension: commandText
+        value: "SELECT 1"
+      - type: contains
+        dimension: commandText
+        value: "rds_heartbeat"</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Deployment Section -->
+  <section id="deployment" class="py-16 px-6 border-t border-gray-800/60 bg-gray-900/30">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-12">
+        <h2 class="text-xs font-bold uppercase tracking-widest text-orange-400 mb-2">Production Operations</h2>
+        <h3 class="text-3xl font-bold tracking-tight text-white">Deployment & Packaging</h3>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <!-- CloudFormation -->
+        <div class="glass rounded-2xl p-6 border border-gray-800 shadow-xl">
+          <h4 class="text-lg font-bold text-white mb-2 flex items-center gap-2">
+            <i class="fa-solid fa-cloud text-orange-400"></i>
+            <span>Deploy via CloudFormation</span>
+          </h4>
+          <p class="text-gray-400 text-sm mb-4">
+            The template in <code>deploy/cloudformation/lambda.yaml</code> provisions the SQS queue, dead-letter queue (DLQ), execution roles, and Lambda event mapping:
+          </p>
+          <pre class="bg-gray-950/80 p-4 rounded-xl text-xs font-mono text-orange-300 border border-gray-800 overflow-x-auto"><code>aws cloudformation deploy \
+  --template-file deploy/cloudformation/lambda.yaml \
+  --stack-name aws-das-processor \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    DasSnsTopicArn=arn:aws:sns:region:acct:das-topic \
+    DasSourceBucketArn=arn:aws:s3:::source-das-bucket \
+    DasDestinationBucketName=analytics-das-parquet \
+    KmsKeyArn=arn:aws:kms:region:acct:key/das-key \
+    RdsResourceId=cluster-ABCD1234EFGH \
+    LambdaImageUri=123456789012.dkr.ecr.region.amazonaws.com/aws-das-processor:latest</code></pre>
+        </div>
+
+        <!-- Local Make & Container Builds -->
+        <div class="glass rounded-2xl p-6 border border-gray-800 shadow-xl">
+          <h4 class="text-lg font-bold text-white mb-2 flex items-center gap-2">
+            <i class="fa-solid fa-terminal text-cyan-400"></i>
+            <span>Local Build & Packaging</span>
+          </h4>
+          <p class="text-gray-400 text-sm mb-4">
+            Use standard Makefile commands to compile, test, and containerize:
+          </p>
+          <pre class="bg-gray-950/80 p-4 rounded-xl text-xs font-mono text-cyan-300 border border-gray-800 overflow-x-auto"><code># Build Lambda zip bundle (bin/aws-das-processor.zip)
+make lambda-package
+
+# Build multi-architecture container
+make docker-build-multiarch
+
+# Run all unit tests with coverage
+make test-coverage
+
+# Serve documentation locally on http://localhost:8080
+make docs-serve</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Licensing Section -->
+  <section id="licensing" class="py-20 px-6 border-t border-gray-800/60">
+    <div class="max-w-4xl mx-auto glass rounded-3xl p-8 sm:p-12 border border-gray-800 glow-orange text-center">
+      <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-orange-500/10 text-orange-400 border border-orange-500/20 mb-6">
+        <i class="fa-solid fa-certificate"></i>
+        <span>Tier 2 Commercial Licensing</span>
+      </div>
+
+      <h3 class="text-3xl font-bold tracking-tight text-white mb-4">
+        Business Source License 1.1 (BSL 1.1)
+      </h3>
+
+      <p class="text-gray-300 leading-relaxed max-w-2xl mx-auto mb-8">
+        This repository is licensed under the <strong>Business Source License 1.1</strong>. It permits free evaluation and non-production use, while requiring a commercial license for production workloads.
+      </p>
+
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-left mb-8">
+        <div class="bg-gray-900/60 p-4 rounded-xl border border-gray-800">
+          <div class="text-xs font-bold uppercase text-orange-400 mb-1">Non-Production Use</div>
+          <div class="text-sm text-gray-300">100% free for local dev, staging, QA, CI/CD automated validation, and POC evaluation.</div>
+        </div>
+        <div class="bg-gray-900/60 p-4 rounded-xl border border-gray-800">
+          <div class="text-xs font-bold uppercase text-orange-400 mb-1">Production Use</div>
+          <div class="text-sm text-gray-300">Requires a valid commercial license (EULA) from DIVMORA Technologies.</div>
+        </div>
+        <div class="bg-gray-900/60 p-4 rounded-xl border border-gray-800">
+          <div class="text-xs font-bold uppercase text-orange-400 mb-1">Change Date</div>
+          <div class="text-sm text-gray-300">Converts to the Apache License, Version 2.0 three (3) years after release.</div>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap justify-center gap-4 text-sm font-semibold">
+        <a href="mailto:licensing@divmora.com" class="px-6 py-3 rounded-xl bg-orange-600 hover:bg-orange-500 text-white shadow-lg shadow-orange-600/30 transition-all flex items-center gap-2">
+          <i class="fa-solid fa-envelope"></i>
+          <span>Contact Licensing</span>
+        </a>
+        <a href="https://divmora.com" target="_blank" class="px-6 py-3 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 transition-all flex items-center gap-2">
+          <i class="fa-solid fa-globe"></i>
+          <span>Visit divmora.com</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="py-12 px-6 border-t border-gray-800 text-center text-xs text-gray-500 bg-gray-950">
+    <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div class="flex items-center gap-2">
+        <span class="font-bold text-gray-300">DIVMORA Technologies</span>
+        <span>&copy; 2026. All rights reserved.</span>
+      </div>
+      <div class="flex items-center gap-6">
+        <a href="CONTRIBUTING.md" class="hover:text-gray-300 transition-colors">Contributing</a>
+        <a href="https://github.com/divmora/.github/blob/main/CODE_OF_CONDUCT.md" target="_blank" class="hover:text-gray-300 transition-colors">Code of Conduct</a>
+        <a href="SECURITY.md" class="hover:text-gray-300 transition-colors">Security Policy</a>
+        <a href="https://github.com/divmora/aws-das-processor" target="_blank" class="hover:text-gray-300 transition-colors">GitHub</a>
+      </div>
+    </div>
+  </footer>
+
 </body>
 </html>
