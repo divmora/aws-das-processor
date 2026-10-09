@@ -430,8 +430,10 @@ query:
         dimension: commandText
         value: "SELECT 1"
 
-# Analytical destination partitioning
+# Analytical destination bucket & partitioning
 output:
+  # bucket: secops-audit-vault       # Dedicated destination S3 bucket
+  # kms_key_id: alias/secops-das-key # Dedicated SSE-KMS Key ID
   format: hive          # hive | date | mirrored
   prefix: das
   include_filter: true  # das/compliance/cluster=.../</code></pre>

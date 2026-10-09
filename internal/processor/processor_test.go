@@ -624,3 +624,131 @@ func TestProcessor_EndToEnd_ZeroRowsSkipped(t *testing.T) {
 		t.Errorf("expected 0 PutObject calls when all rows filtered out, got %d", putCalls)
 	}
 }
+
+func TestProcessor_EndToEnd_PerFilterDestinationBucketAndKMSKey(t *testing.T) {
+	ctx := context.Background()
+
+	key := []byte("01234567890123456789012345678901")
+	sampleEvents := `{
+		"type":"DatabaseActivityMonitoringRecords",
+		"version":"1.0",
+		"databaseActivityEventList":[
+			{"command":"SELECT 1", "dbUserName":"app_user"}
+		]
+	}`
+	var b bytes.Buffer
+	zw := zlib.NewWriter(&b)
+	zw.Write([]byte(sampleEvents))
+	zw.Close()
+
+	matProv, _ := mpl.NewClient(mpltypes.MaterialProvidersConfig{})
+	aesKeyring, _ := matProv.CreateRawAesKeyring(ctx, mpltypes.CreateRawAesKeyringInput{
+		KeyName:      "DataKey",
+		KeyNamespace: "RawMasterKeyProvider",
+		WrappingKey:  key,
+		WrappingAlg:  mpltypes.AesWrappingAlgAlgAes256GcmIv12Tag16,
+	})
+	encClient, _ := client.NewClient(esdktypes.AwsEncryptionSdkConfig{})
+	encRes, _ := encClient.Encrypt(ctx, esdktypes.EncryptInput{
+		Plaintext: b.Bytes(),
+		Keyring:   aesKeyring,
+	})
+
+	dasPayload := model.DASPayload{
+		Type:                   "DatabaseActivityMonitoringRecords",
+		Version:                "1.0",
+		Key:                    base64.StdEncoding.EncodeToString([]byte("mock-kms-key")),
+		DatabaseActivityEvents: base64.StdEncoding.EncodeToString(encRes.Ciphertext),
+	}
+	dasPayloadBytes, _ := json.Marshal(dasPayload)
+
+	type putCallRecord struct {
+		bucket   string
+		key      string
+		kmsKeyID string
+	}
+	var putRecords []putCallRecord
+
+	mockS3 := &mockS3Client{
+		getObjectFunc: func(ctx context.Context, in *s3.GetObjectInput, opt ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+			return &s3.GetObjectOutput{
+				Body: io.NopCloser(bytes.NewReader(dasPayloadBytes)),
+			}, nil
+		},
+		putObjectFunc: func(ctx context.Context, in *s3.PutObjectInput, opt ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+			rec := putCallRecord{
+				bucket: *in.Bucket,
+				key:    *in.Key,
+			}
+			if in.SSEKMSKeyId != nil {
+				rec.kmsKeyID = *in.SSEKMSKeyId
+			}
+			putRecords = append(putRecords, rec)
+			return &s3.PutObjectOutput{}, nil
+		},
+	}
+	mockKMS := &mockKMSClient{
+		decryptFunc: func(ctx context.Context, in *kms.DecryptInput, opt ...func(*kms.Options)) (*kms.DecryptOutput, error) {
+			return &kms.DecryptOutput{Plaintext: key}, nil
+		},
+	}
+
+	p := New(mockS3, mockKMS)
+
+	complianceFilter := &filter.FilterConfig{
+		Name: "compliance",
+		Match: &filter.MatchConfig{
+			Clusters: []string{"*"},
+		},
+		Output: &filter.OutputConfig{
+			Bucket: "compliance-dedicated-bucket",
+			Prefix: strPtr("audit"),
+		},
+	}
+
+	secopsFilter := &filter.FilterConfig{
+		Name: "secops",
+		Match: &filter.MatchConfig{
+			Clusters: []string{"*"},
+		},
+		Output: &filter.OutputConfig{
+			Bucket:   "secops-vault-bucket",
+			KmsKeyID: "arn:aws:kms:us-east-1:123456789012:key/secops-cmk",
+			Prefix:   strPtr("secops"),
+		},
+	}
+
+	p.SetFilterConfigs([]*filter.FilterConfig{complianceFilter, secopsFilter})
+
+	firehoseKey := "firehose/cluster-EXAMPLE1234567890ABCDEF/2026/10/01/05/das-events.json"
+	s3NotifJSON := fmt.Sprintf(`{"Records":[{"s3":{"bucket":{"name":%q},"object":{"key":%q}}}]}`, "raw-source-bucket", firehoseKey)
+	msg := events.SQSMessage{
+		MessageId: "msg-per-filter-dest",
+		Body:      s3NotifJSON,
+	}
+
+	err := p.ProcessMessage(ctx, msg, "")
+	if err != nil {
+		t.Fatalf("expected successful message processing, got: %v", err)
+	}
+
+	if len(putRecords) != 2 {
+		t.Fatalf("expected 2 PutObject calls, got %d", len(putRecords))
+	}
+
+	// Verify compliance output
+	if putRecords[0].bucket != "compliance-dedicated-bucket" {
+		t.Errorf("expected bucket[0]=compliance-dedicated-bucket, got %q", putRecords[0].bucket)
+	}
+	if putRecords[0].kmsKeyID != "" {
+		t.Errorf("expected kmsKeyID[0] to be empty, got %q", putRecords[0].kmsKeyID)
+	}
+
+	// Verify secops output
+	if putRecords[1].bucket != "secops-vault-bucket" {
+		t.Errorf("expected bucket[1]=secops-vault-bucket, got %q", putRecords[1].bucket)
+	}
+	if putRecords[1].kmsKeyID != "arn:aws:kms:us-east-1:123456789012:key/secops-cmk" {
+		t.Errorf("expected kmsKeyID[1]=arn:aws:kms:us-east-1:123456789012:key/secops-cmk, got %q", putRecords[1].kmsKeyID)
+	}
+}

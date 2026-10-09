@@ -12,8 +12,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// OutputConfig defines S3 destination path and partition formatting for Parquet files
+// OutputConfig defines S3 destination bucket, KMS encryption, path and partition formatting for Parquet files
 type OutputConfig struct {
+	Bucket        string  `json:"bucket,omitempty" yaml:"bucket,omitempty"`                 // destination S3 bucket name (overrides DAS_OUTPUT_BUCKET)
+	KmsKeyID      string  `json:"kms_key_id,omitempty" yaml:"kms_key_id,omitempty"`         // SSE-KMS Key ID/ARN (overrides DAS_OUTPUT_KMS_KEY_ID)
 	Format        string  `json:"format,omitempty" yaml:"format,omitempty"`                 // "hive", "date", "mirrored"
 	Prefix        *string `json:"prefix,omitempty" yaml:"prefix,omitempty"`                 // e.g. "das" (default if nil) or "" for root
 	IncludeFilter bool    `json:"include_filter,omitempty" yaml:"include_filter,omitempty"` // whether to include /<filter-name>/ in path

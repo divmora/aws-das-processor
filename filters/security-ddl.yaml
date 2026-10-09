@@ -9,6 +9,8 @@ query:
   dimension: command
   value: DROP
 output:
+  # bucket: secops-audit-vault       # Optional: override default analytical S3 bucket
+  # kms_key_id: alias/secops-das-key # Optional: dedicated KMS CMK for this destination bucket
   format: date
   prefix: security-audit
   include_filter: true

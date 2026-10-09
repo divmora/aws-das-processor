@@ -208,20 +208,40 @@ func (p *Processor) ProcessMessage(ctx context.Context, message events.SQSMessag
 		}
 
 		// 7. Write to analytical destination S3 for each matched filter
-		destBucket := os.Getenv("DAS_OUTPUT_BUCKET")
-		if destBucket == "" {
-			destBucket = sourceBucket
-		}
-		if destBucket == sourceBucket {
-			slog.Warn("Source and destination buckets are identical; ensure S3 event notification prefix filters are configured to prevent recursive execution loops", "Bucket", sourceBucket)
+		defaultDestBucket := os.Getenv("DAS_OUTPUT_BUCKET")
+		if defaultDestBucket == "" {
+			defaultDestBucket = sourceBucket
 		}
 
-		outputKmsKeyID := os.Getenv("DAS_OUTPUT_KMS_KEY_ID")
+		defaultOutputKmsKeyID := os.Getenv("DAS_OUTPUT_KMS_KEY_ID")
 
 		for _, f := range matchedFilters {
 			activeFilterName := f.Name
 			if activeFilterName == "" {
 				activeFilterName = "default"
+			}
+
+			// Destination bucket resolution:
+			// 1. Filter-level output.bucket
+			// 2. Environment variable DAS_OUTPUT_BUCKET
+			// 3. Incoming source S3 bucket
+			activeDestBucket := defaultDestBucket
+			if f.Output != nil && f.Output.Bucket != "" {
+				activeDestBucket = f.Output.Bucket
+			}
+			if activeDestBucket == sourceBucket {
+				slog.Warn("Source and destination buckets are identical; ensure S3 event notification prefix filters are configured to prevent recursive execution loops",
+					"Filter", activeFilterName,
+					"Bucket", sourceBucket,
+				)
+			}
+
+			// KMS Key resolution:
+			// 1. Filter-level output.kms_key_id
+			// 2. Environment variable DAS_OUTPUT_KMS_KEY_ID
+			activeKmsKeyID := defaultOutputKmsKeyID
+			if f.Output != nil && f.Output.KmsKeyID != "" {
+				activeKmsKeyID = f.Output.KmsKeyID
 			}
 
 			parquetBytes, rowCount, err := parquet.ConvertEventsToParquet(container.DatabaseActivityEventList, f)
@@ -242,25 +262,25 @@ func (p *Processor) ProcessMessage(ctx context.Context, message events.SQSMessag
 			slog.Info("Writing processed data back to S3",
 				"Filter", activeFilterName,
 				"SourceBucket", sourceBucket,
-				"DestBucket", destBucket,
+				"DestBucket", activeDestBucket,
 				"DestKey", destKey,
 				"ResourceID", clusterID,
 				"RowCount", rowCount,
 			)
 
 			putInput := &s3.PutObjectInput{
-				Bucket: aws.String(destBucket),
+				Bucket: aws.String(activeDestBucket),
 				Key:    aws.String(destKey),
 				Body:   bytes.NewReader(parquetBytes),
 			}
 
-			if outputKmsKeyID != "" {
+			if activeKmsKeyID != "" {
 				putInput.ServerSideEncryption = s3types.ServerSideEncryptionAwsKms
-				putInput.SSEKMSKeyId = aws.String(outputKmsKeyID)
+				putInput.SSEKMSKeyId = aws.String(activeKmsKeyID)
 			}
 
 			if _, err = p.S3Client.PutObject(ctx, putInput); err != nil {
-				return fmt.Errorf("failed to write processed data to %s/%s for filter %q: %w", destBucket, destKey, activeFilterName, err)
+				return fmt.Errorf("failed to write processed data to %s/%s for filter %q: %w", activeDestBucket, destKey, activeFilterName, err)
 			}
 		}
 	}

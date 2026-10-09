@@ -128,22 +128,29 @@ It is prefix-agnostic and supports various delivery topologies:
 
 If an incoming S3 key does not contain a recognizable cluster or instance prefix, the processor falls back to the configured `DAS_RDS_RESOURCE_ID` environment variable.
 
-### Destination S3 Partitioning Formats
+### Destination S3 Partitioning & Bucket Routing
 
-Destination S3 paths are configurable per filter profile in `filters/<name>.yaml` (or `.json`) under the `output` block, and can be overridden via environment variables:
+Destination S3 buckets, encryption keys, and partitioning formats are configurable per filter profile in `filters/<name>.yaml` (or `.json`) under the `output` block:
 
 ```yaml
 output:
-  format: "hive"          # Options: "hive" | "date" | "mirrored" (default: "hive")
-  prefix: "das"           # Base S3 prefix (default: "das", set "" for bucket root)
-  include_filter: true    # Whether to include /<filter-name>/ in S3 path (default: false)
+  bucket: "secops-audit-vault"         # Target S3 bucket (overrides DAS_OUTPUT_BUCKET)
+  kms_key_id: "alias/secops-das-key"   # Target KMS key for SSE-KMS (overrides DAS_OUTPUT_KMS_KEY_ID)
+  format: "hive"                       # Options: "hive" | "date" | "mirrored" (default: "hive")
+  prefix: "das"                        # Base S3 prefix (default: "das", set "" for bucket root)
+  include_filter: true                 # Whether to include /<filter-name>/ in S3 path (default: false)
 ```
+
+#### Destination Resolution Hierarchy
+1. **Target Bucket**: Filter `output.bucket` &rarr; Environment `DAS_OUTPUT_BUCKET` &rarr; Incoming source S3 bucket.
+2. **KMS Encryption Key**: Filter `output.kms_key_id` &rarr; Environment `DAS_OUTPUT_KMS_KEY_ID` (unencrypted S3 default if neither is set).
 
 | Format | Structure in Destination S3 | Best Used For |
 |:---|:---|:---|
 | **`hive`** | `[prefix/][<filter>/]cluster=<cluster-id>/year=YYYY/month=MM/day=DD/hour=HH/<file>.parquet` | **Amazon Athena & AWS Glue**: Direct partition projection and query optimization. |
 | **`date`** | `[prefix/][<filter>/]<cluster-id>/YYYY/MM/DD/HH/<file>.parquet` | **Data Lake / Snowflake / Databricks**: Clean standard chronological folder hierarchy. |
 | **`mirrored`** | `[prefix/][<filter>/]<source-path>-processed.parquet` | **1-to-1 Stream Mirroring**: Preserves source S3 delivery structure. |
+
 
 
 ---

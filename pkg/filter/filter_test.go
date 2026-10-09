@@ -385,6 +385,8 @@ query:
   type: dimensionExists
   dimension: objectName
 output:
+  bucket: custom-dest-bucket
+  kms_key_id: custom-kms-key
   format: date
   prefix: data-lake
   include_filter: true
@@ -400,7 +402,7 @@ output:
 	if len(cfg.Drop) != 1 || cfg.Drop[0] != "clientApplication" {
 		t.Errorf("unexpected Drop fields from YAML: %+v", cfg.Drop)
 	}
-	if cfg.Output == nil || cfg.Output.Format != "date" || cfg.Output.Prefix == nil || *cfg.Output.Prefix != "data-lake" || cfg.Output.IncludeFilter != true {
+	if cfg.Output == nil || cfg.Output.Format != "date" || cfg.Output.Prefix == nil || *cfg.Output.Prefix != "data-lake" || cfg.Output.IncludeFilter != true || cfg.Output.Bucket != "custom-dest-bucket" || cfg.Output.KmsKeyID != "custom-kms-key" {
 		t.Errorf("unexpected Output config from YAML: %+v", cfg.Output)
 	}
 
