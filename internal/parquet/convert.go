@@ -46,7 +46,11 @@ func GetString(m map[string]interface{}, key string) string {
 		if s, ok := v.(string); ok {
 			return s
 		}
-		return fmt.Sprintf("%v", v)
+		res := fmt.Sprintf("%v", v)
+		if res == "<nil>" {
+			return ""
+		}
+		return res
 	}
 	return ""
 }
