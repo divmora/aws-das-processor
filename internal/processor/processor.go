@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"path"
 	"regexp"
@@ -129,6 +130,16 @@ func IsS3TestEvent(body string) bool {
 	return false
 }
 
+// DecodeS3Key decodes URL-encoded characters in S3 object keys (such as `+` for spaces or percent-encoded characters)
+// according to the AWS S3 event notification specification. If unescaping fails, it returns the original key.
+func DecodeS3Key(key string) string {
+	decoded, err := url.QueryUnescape(key)
+	if err != nil {
+		return key
+	}
+	return decoded
+}
+
 // ParseS3Records extracts S3 bucket and object key references from multiple event notification envelopes:
 // 1. Amazon EventBridge S3 notification (modern default): {"source":"aws.s3","detail":{"bucket":{"name":"..."},"object":{"key":"..."}}}
 // 2. Amazon SNS wrapped S3 notification: {"Type":"Notification","Message":"..."}
@@ -146,7 +157,7 @@ func ParseS3Records(body string) ([]S3RecordRef, error) {
 	if err := json.Unmarshal([]byte(body), &ebEvent); err == nil && ebEvent.Source == "aws.s3" && ebEvent.Detail.Bucket.Name != "" && ebEvent.Detail.Object.Key != "" {
 		return []S3RecordRef{{
 			Bucket: ebEvent.Detail.Bucket.Name,
-			Key:    ebEvent.Detail.Object.Key,
+			Key:    DecodeS3Key(ebEvent.Detail.Object.Key),
 		}}, nil
 	}
 
@@ -162,7 +173,7 @@ func ParseS3Records(body string) ([]S3RecordRef, error) {
 			var targets []S3RecordRef
 			for _, r := range innerS3.Records {
 				if r.S3.Bucket.Name != "" && r.S3.Object.Key != "" {
-					targets = append(targets, S3RecordRef{Bucket: r.S3.Bucket.Name, Key: r.S3.Object.Key})
+					targets = append(targets, S3RecordRef{Bucket: r.S3.Bucket.Name, Key: DecodeS3Key(r.S3.Object.Key)})
 				}
 			}
 			if len(targets) > 0 {
@@ -174,7 +185,7 @@ func ParseS3Records(body string) ([]S3RecordRef, error) {
 		if err := json.Unmarshal([]byte(snsMsg.Message), &innerEB); err == nil && innerEB.Detail.Bucket.Name != "" && innerEB.Detail.Object.Key != "" {
 			return []S3RecordRef{{
 				Bucket: innerEB.Detail.Bucket.Name,
-				Key:    innerEB.Detail.Object.Key,
+				Key:    DecodeS3Key(innerEB.Detail.Object.Key),
 			}}, nil
 		}
 
@@ -187,7 +198,7 @@ func ParseS3Records(body string) ([]S3RecordRef, error) {
 		var targets []S3RecordRef
 		for _, r := range s3Event.Records {
 			if r.S3.Bucket.Name != "" && r.S3.Object.Key != "" {
-				targets = append(targets, S3RecordRef{Bucket: r.S3.Bucket.Name, Key: r.S3.Object.Key})
+				targets = append(targets, S3RecordRef{Bucket: r.S3.Bucket.Name, Key: DecodeS3Key(r.S3.Object.Key)})
 			}
 		}
 		if len(targets) > 0 {

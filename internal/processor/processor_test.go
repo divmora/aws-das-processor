@@ -1690,3 +1690,89 @@ func TestProcessor_Handler(t *testing.T) {
 		t.Errorf("expected 0 batch item failures, got %d", len(resp.BatchItemFailures))
 	}
 }
+
+func TestDecodeS3Key(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "Plus as space",
+			input:    "AWSLogs/123/DAS/cluster-test/2026/10/das+stream+file.json",
+			expected: "AWSLogs/123/DAS/cluster-test/2026/10/das stream file.json",
+		},
+		{
+			name:     "Percent-encoded characters (%20, %3D, %3A)",
+			input:    "AWSLogs/123/DAS/cluster-test/year%3D2026/date%3D2026-10-12/das%20file.json",
+			expected: "AWSLogs/123/DAS/cluster-test/year=2026/date=2026-10-12/das file.json",
+		},
+		{
+			name:     "Special characters like @ and &",
+			input:    "prefix/user%40example.com/file%26data.json",
+			expected: "prefix/user@example.com/file&data.json",
+		},
+		{
+			name:     "Plain unencoded key remains unchanged",
+			input:    "AWSLogs/123456789012/DAS/us-east-1/cluster-ABCD/2026/10/12/das.json",
+			expected: "AWSLogs/123456789012/DAS/us-east-1/cluster-ABCD/2026/10/12/das.json",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DecodeS3Key(tt.input)
+			if got != tt.expected {
+				t.Errorf("DecodeS3Key(%q) = %q; want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParseS3Records_UrlDecoding(t *testing.T) {
+	// 1. Direct S3 event with plus-separated spaces and percent-encoding
+	s3Notification := `{
+		"Records": [
+			{
+				"s3": {
+					"bucket": {"name": "test-raw-bucket"},
+					"object": {"key": "AWSLogs/123/DAS/cluster-test/year%3D2026/month%3D10/das+log+file.json"}
+				}
+			}
+		]
+	}`
+
+	records, err := ParseS3Records(s3Notification)
+	if err != nil {
+		t.Fatalf("unexpected error parsing S3 notification: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	expectedKey := "AWSLogs/123/DAS/cluster-test/year=2026/month=10/das log file.json"
+	if records[0].Key != expectedKey {
+		t.Errorf("expected decoded key %q, got %q", expectedKey, records[0].Key)
+	}
+
+	// 2. EventBridge notification with URL encoding
+	ebNotification := `{
+		"source": "aws.s3",
+		"detail-type": "Object Created",
+		"detail": {
+			"bucket": {"name": "test-eb-bucket"},
+			"object": {"key": "firehose/cluster-PROD/year%3D2026/das%20file.json"}
+		}
+	}`
+
+	ebRecords, err := ParseS3Records(ebNotification)
+	if err != nil {
+		t.Fatalf("unexpected error parsing EventBridge notification: %v", err)
+	}
+	if len(ebRecords) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(ebRecords))
+	}
+	expectedEBKey := "firehose/cluster-PROD/year=2026/das file.json"
+	if ebRecords[0].Key != expectedEBKey {
+		t.Errorf("expected decoded key %q, got %q", expectedEBKey, ebRecords[0].Key)
+	}
+}
