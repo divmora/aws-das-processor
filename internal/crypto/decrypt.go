@@ -35,7 +35,10 @@ func DecryptAWSEncryptionSDKPayload(ctx context.Context, ciphertext, plaintextDa
 		return nil, fmt.Errorf("failed to create raw aes keyring: %w", err)
 	}
 
-	encryptionClient, err := client.NewClient(esdktypes.AwsEncryptionSdkConfig{})
+	commitmentPolicy := mpltypes.ESDKCommitmentPolicyRequireEncryptAllowDecrypt
+	encryptionClient, err := client.NewClient(esdktypes.AwsEncryptionSdkConfig{
+		CommitmentPolicy: &commitmentPolicy,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create encryption sdk client: %w", err)
 	}
