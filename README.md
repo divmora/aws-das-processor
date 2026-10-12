@@ -67,14 +67,16 @@ A single RDS Database Activity Stream often feeds multiple analytical consumers 
   das/compliance/cluster=.../             secops/security-ddl/...
 ```
 
-### Filter Matching Rules & Schema
+### Filter Specification & Configuration Reference
 
-Each filter profile defined in `filters/<name>.yaml` supports granular matching conditions:
+Each filter profile defined in `filters/<name>.yaml` controls event routing, payload field redaction, AST record evaluation, and analytical Parquet destination formatting.
 
 ```yaml
 name: compliance
 enabled: true # Set to false to disable without deleting the file
 kms_region: "eu-west-1" # Optional: AWS region of source KMS CMK for cross-region decryption
+
+# Event matching & routing criteria
 match:
   clusters:
     - "cluster-EXAMPLE1234567890ABCDEF" # Exact cluster match
@@ -83,27 +85,172 @@ match:
   paths:
     - "firehose/*"                      # Wildcard path pattern
     - "AWSLogs/123456789012/RDS/*"      # AWS native log prefix
+  buckets:
+    - "aws-das-logs-raw-*"              # Source S3 bucket wildcard
+
+# Field-level redaction (stripped before writing to Parquet)
 drop:
   - clientMac
   - clientApplication
+
+# Recursive AST query filter
 query:
   type: not
   field:
-    type: selector
-    dimension: dbUserName
-    value: "rdsadmin"
+    type: or
+    fields:
+      - type: selector
+        dimension: dbUserName
+        value: "rdsadmin"
+      - type: contains
+        dimension: commandText
+        value: "SELECT 1"
+
+# Analytical destination output configuration
 output:
-  format: hive          # Options: "hive" | "date" | "mirrored"
-  prefix: das           # Analytical S3 prefix
-  include_filter: true  # Enables das/compliance/... path isolation
+  bucket: "secops-audit-vault"         # Target S3 bucket (overrides DAS_OUTPUT_BUCKET)
+  kms_key_id: "alias/secops-das-key"   # Target KMS key for SSE-KMS (overrides DAS_OUTPUT_KMS_KEY_ID)
+  format: hive                         # Partitioning format: "hive" | "date" | "mirrored"
+  prefix: das                          # Base S3 prefix (default: "das", set "" for bucket root)
+  include_filter: true                 # Include /<filter-name>/ in S3 path (default: false)
 ```
 
-- **`enabled`**: Optional boolean (`true` by default). Set to `false` to temporarily skip a filter without deleting the rule file.
-- **`kms_region`**: Optional AWS region where the RDS KMS customer managed key (CMK) resides. Enables cross-region decryption when databases reside across multiple AWS regions.
-- **`match.clusters`**: List of RDS DB cluster/instance patterns. If non-empty, the event's cluster ID must match at least one pattern.
-- **`match.paths`**: List of S3 key patterns or directory prefixes. If non-empty, the incoming S3 key must match at least one pattern.
-- **`match.buckets`**: List of source S3 bucket name patterns (e.g. `["aws-das-logs-raw-*"]`). If non-empty, the incoming source bucket must match at least one pattern.
-- If multiple criteria (`clusters`, `paths`, `buckets`) are configured, **all** specified criteria must match (AND condition).
+#### Top-Level Fields
+
+| Field | Type | Required | Default | Description |
+|:---|:---|:---|:---|:---|
+| `name` | string | Optional | Filename base | Unique filter identifier. Used in logs, fallback resolution, and S3 paths when `include_filter: true`. |
+| `enabled` | boolean | Optional | `true` | Enables or disables the filter. Disabled filters (`enabled: false`) are ignored during event routing. |
+| `kms_region` | string | Optional | `""` | AWS region of the source KMS CMK used to decrypt DAS log payloads (overrides `DAS_KMS_REGION_NAME`). |
+| `match` | object | Optional | `{}` | Ingestion routing criteria (`clusters`, `paths`, `buckets`). If omitted, acts as a fallback default filter. |
+| `drop` | array | Optional | `[]` | List of field names to strip from database activity records prior to Parquet serialization. |
+| `query` | object | Optional | `{}` | Recursive AST query expression evaluated against each record. Empty matches all records. |
+| `output` | object | Optional | `{}` | Parquet destination S3 bucket, SSE-KMS encryption key, prefix, and partition formatting. |
+
+---
+
+### Ingestion Matching Rules (`match`)
+
+The `match` block defines which incoming raw S3 delivery objects should be processed by this filter:
+
+- **`match.clusters`**: List of database cluster or instance identifier patterns (e.g. `["cluster-*"]`, `["db-prod-01"]`). Evaluated against the RDS Resource ID dynamically extracted from the S3 key path or `DAS_RDS_RESOURCE_ID`.
+- **`match.paths`**: List of S3 key path patterns or directory prefixes (e.g. `["firehose/*"]`, `["AWSLogs/*/DAS/*"]`). Directory prefixes ending with `/` perform fast prefix matching.
+- **`match.buckets`**: List of raw source S3 bucket name patterns (e.g. `["aws-das-logs-raw-*"]`, `["my-app-logs"]`).
+- **Pattern Matching Rules**:
+  - `*` matches zero or more characters.
+  - `?` matches any single character.
+  - Comparisons are case-insensitive.
+  - Directory prefixes ending with `/` match any key starting with that prefix.
+  - If multiple criteria (`clusters`, `paths`, `buckets`) are configured, **all** defined criteria must match (AND logic).
+
+---
+
+### Field Stripping (`drop`)
+
+The `drop` block accepts a list of event dimension keys to remove from the JSON records before writing them into Parquet:
+
+```yaml
+drop:
+  - clientMac
+  - clientApplication
+  - serverHost
+  - pid
+```
+
+- Protects sensitive internal data and eliminates telemetry noise.
+- Stripping operates on an in-memory shallow copy per filter, allowing multiple filters matching the same event to strip different fields independently without mutating shared payloads.
+
+---
+
+### Recursive AST Query Engine (`query`)
+
+The `query` block provides a composable Abstract Syntax Tree (AST) engine that evaluates each database activity record. If an event evaluates to `true`, it is serialized to Parquet; otherwise, it is dropped. *(Note: AWS DAS heartbeat events are automatically pruned by the engine).*
+
+#### Supported Query Operators
+
+| Operator | Required Fields | Description | Example |
+|:---|:---|:---|:---|
+| **`selector`** | `dimension`, `value` | Exact equality match (`record[dimension] == value`). | `type: selector`<br>`dimension: command`<br>`value: DROP` |
+| **`dimensionExists`** | `dimension` | Checks if a dimension key exists in the record. | `type: dimensionExists`<br>`dimension: errorMessage` |
+| **`contains`** | `dimension`, `value` | Evaluates substring containment for strings, item membership for arrays, or key presence for maps. | `type: contains`<br>`dimension: commandText`<br>`value: "SELECT 1"` |
+| **`not`** | `field` | Logical NOT. Inverts the boolean result of the nested sub-query. | `type: not`<br>`field: { ... }` |
+| **`and`** | `fields` | Logical AND. Evaluates to `true` only if every nested sub-query evaluates to `true`. | `type: and`<br>`fields: [ { ... }, { ... } ]` |
+| **`or`** | `fields` | Logical OR. Evaluates to `true` if at least one nested sub-query evaluates to `true`. | `type: or`<br>`fields: [ { ... }, { ... } ]` |
+
+#### AST Operator Examples
+
+##### 1. Exact Equality (`selector`)
+```yaml
+query:
+  type: selector
+  dimension: command
+  value: DROP
+```
+
+##### 2. Dimension Existence (`dimensionExists`)
+```yaml
+query:
+  type: dimensionExists
+  dimension: errorMessage
+```
+
+##### 3. Substring & Array Membership (`contains`)
+```yaml
+# Matches if commandText contains "pg_sleep"
+query:
+  type: contains
+  dimension: commandText
+  value: "pg_sleep"
+```
+
+##### 4. Compound Logic (`not`, `and`, `or`)
+```yaml
+# Drop internal queries while keeping real application traffic
+query:
+  type: not
+  field:
+    type: or
+    fields:
+      - type: selector
+        dimension: dbUserName
+        value: rdsadmin
+      - type: contains
+        dimension: commandText
+        value: "rds_heartbeat"
+      - type: contains
+        dimension: commandText
+        value: "pg_stat_statements"
+```
+
+---
+
+### Database Activity Stream Event Dimensions Reference
+
+All records produced by RDS Database Activity Streams are parsed and mapped to the following schema. You can query any of these fields in `query.dimension` or redact them in `drop`:
+
+| Dimension (Field) | Type | Parquet Encoding | Description & Sample Values |
+|:---|:---|:---|:---|
+| `logTime` | string | Dictionary | Timestamp when the database executed the event (e.g. `"2026-10-12 09:30:15.123"`). |
+| `statementId` | int64 | Plain | Sequential statement identifier within the database session. |
+| `substatementId` | int64 | Plain | Sequential substatement identifier for nested/trigger executions. |
+| `objectType` | string | Dictionary | Type of database object accessed (e.g. `"TABLE"`, `"VIEW"`, `"INDEX"`, `"DATABASE"`). |
+| `command` | string | Dictionary | High-level database operation (e.g. `"SELECT"`, `"INSERT"`, `"UPDATE"`, `"DELETE"`, `"DROP"`, `"ALTER"`, `"CREATE"`). |
+| `objectName` | string | Dictionary | Name of the database object accessed (e.g. `"users"`, `"orders"`). |
+| `databaseName` | string | Dictionary | Name of the active database (e.g. `"production_app"`). |
+| `dbUserName` | string | Dictionary | Database user executing the command (e.g. `"app_service"`, `"rdsadmin"`, `"dba_admin"`). |
+| `remoteHost` | string | Dictionary | Client hostname or IP address initiating the database connection. |
+| `sessionId` | string | Dictionary | Unique session identifier for the database connection. |
+| `rowCount` | int64 | Plain | Number of rows affected or returned by the command execution. |
+| `commandText` | string | Dictionary | Full SQL query or command executed by the client. |
+| `paramList` | []string | List | Bound parameter values supplied with prepared statements. |
+| `pid` | int64 | Plain | Operating system process ID of the database server backend process. |
+| `clientApplication` | string | Dictionary | Client application or driver name (e.g. `"PostgreSQL JDBC Driver"`, `"psql"`, `"DBeaver"`). |
+| `exitCode` | string | Dictionary | Database execution exit code or status (normalized to string, e.g. `"0"`). |
+| `class` | string | Dictionary | Activity class category (e.g. `"READ"`, `"WRITE"`, `"MISC"`). |
+| `serverHost` | string | Dictionary | Database server host or instance endpoint handling the request. |
+| `type` | string | Dictionary | Event record classification (e.g. `"record"`, `"heartbeat"`). |
+| `startTime` | string | Dictionary | Timestamp when statement execution started. |
+| `errorMessage` | string | Dictionary | Detailed error message or exception if statement execution failed. |
 
 ---
 

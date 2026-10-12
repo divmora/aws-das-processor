@@ -371,7 +371,16 @@ graph LR
               <span class="text-cyan-400 font-mono">selector</span> (Equality Match)
             </h4>
             <p class="text-gray-400 text-sm">
-              Evaluates if a specific dimension exactly matches a value (e.g., <code>type: "selector", dimension: "dbUser", value: "rdsadmin"</code>).
+              Evaluates if a specific dimension exactly matches a value (e.g., <code>type: "selector", dimension: "dbUserName", value: "rdsadmin"</code>).
+            </p>
+          </div>
+
+          <div class="glass rounded-xl p-5 border border-gray-800">
+            <h4 class="font-semibold text-white text-base mb-1 flex items-center gap-2">
+              <span class="text-amber-400 font-mono">dimensionExists</span> (Field Presence)
+            </h4>
+            <p class="text-gray-400 text-sm">
+              Checks whether a specific dimension key exists in the record (e.g., <code>type: "dimensionExists", dimension: "errorMessage"</code>).
             </p>
           </div>
 
@@ -380,7 +389,7 @@ graph LR
               <span class="text-emerald-400 font-mono">contains</span> (Substring & Array Match)
             </h4>
             <p class="text-gray-400 text-sm">
-              Checks whether a string dimension contains a substring, or an array dimension contains an item (e.g. finding heartbeat query text).
+              Checks whether a string dimension contains a substring, an array contains an item, or a map contains a key.
             </p>
           </div>
 
@@ -389,7 +398,7 @@ graph LR
               <span class="text-violet-400 font-mono">and / or / not</span> (Boolean Combinators)
             </h4>
             <p class="text-gray-400 text-sm">
-              Recursively nests sub-expressions to create fine-grained filtering conditions.
+              Recursively nests sub-expressions to create fine-grained filtering conditions with boolean logic.
             </p>
           </div>
         </div>
@@ -442,6 +451,260 @@ output:
   format: hive          # hive | date | mirrored
   prefix: das
   include_filter: true  # das/compliance/cluster=.../</code></pre>
+        </div>
+      </div>
+
+      <!-- Filter Schema Reference Table -->
+      <div class="mt-12 glass rounded-2xl border border-gray-800 overflow-hidden shadow-2xl">
+        <div class="bg-gray-800/80 px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+          <div class="flex items-center gap-2 text-sm font-semibold text-white">
+            <i class="fa-solid fa-sliders text-orange-400"></i>
+            <span>Filter YAML Schema Reference</span>
+          </div>
+          <span class="text-xs text-gray-400 font-mono">filters/*.yaml</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-gray-800/60 text-gray-200 uppercase text-xs tracking-wider border-b border-gray-700">
+              <tr>
+                <th class="py-3 px-6 font-semibold">Property</th>
+                <th class="py-3 px-6 font-semibold">Type</th>
+                <th class="py-3 px-6 font-semibold">Default</th>
+                <th class="py-3 px-6 font-semibold">Description</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800 text-gray-300 text-xs sm:text-sm">
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-orange-400 font-semibold">name</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Filename</td>
+                <td class="py-3 px-6">Unique identifier for the filter. Used in logs, fallback matching, and S3 partition paths when <code>include_filter: true</code>.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-orange-400 font-semibold">enabled</td>
+                <td class="py-3 px-6 font-mono text-gray-400">boolean</td>
+                <td class="py-3 px-6 font-mono text-gray-400">true</td>
+                <td class="py-3 px-6">Enables or disables filter evaluation. Set to <code>false</code> to bypass without deleting the file.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-orange-400 font-semibold">kms_region</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">""</td>
+                <td class="py-3 px-6">AWS region where the database KMS CMK is located. Overrides ambient region and <code>DAS_KMS_REGION_NAME</code>.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">match.clusters</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string[]</td>
+                <td class="py-3 px-6 font-mono text-gray-400">[]</td>
+                <td class="py-3 px-6">Patterns for cluster identifiers (e.g. <code>["cluster-*"]</code>, <code>["db-*"]</code>). Must match extracted RDS Resource ID.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">match.paths</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string[]</td>
+                <td class="py-3 px-6 font-mono text-gray-400">[]</td>
+                <td class="py-3 px-6">Patterns for S3 key paths (e.g. <code>["firehose/*"]</code>, <code>["AWSLogs/*/DAS/*"]</code>). Wildcards <code>*</code> and <code>?</code> supported.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">match.buckets</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string[]</td>
+                <td class="py-3 px-6 font-mono text-gray-400">[]</td>
+                <td class="py-3 px-6">Patterns for source S3 bucket names (e.g. <code>["aws-das-logs-raw-*"]</code>).</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-orange-400 font-semibold">drop</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string[]</td>
+                <td class="py-3 px-6 font-mono text-gray-400">[]</td>
+                <td class="py-3 px-6">List of event dimension field names to strip from the record prior to writing to Parquet.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-orange-400 font-semibold">query</td>
+                <td class="py-3 px-6 font-mono text-gray-400">object</td>
+                <td class="py-3 px-6 font-mono text-gray-400">{}</td>
+                <td class="py-3 px-6">Recursive AST expression evaluated against each record. Only matching records are written to Parquet.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-emerald-400 font-semibold">output.bucket</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">DAS_OUTPUT_BUCKET</td>
+                <td class="py-3 px-6">Destination S3 analytical bucket for writing Parquet files.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-emerald-400 font-semibold">output.kms_key_id</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">DAS_OUTPUT_KMS_KEY_ID</td>
+                <td class="py-3 px-6">SSE-KMS Key ID or ARN to encrypt output Parquet objects.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-emerald-400 font-semibold">output.format</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">hive</td>
+                <td class="py-3 px-6">Partitioning layout: <code>hive</code>, <code>date</code>, or <code>mirrored</code>.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-emerald-400 font-semibold">output.prefix</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">das</td>
+                <td class="py-3 px-6">Base prefix path in destination bucket (set <code>""</code> for bucket root).</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-emerald-400 font-semibold">output.include_filter</td>
+                <td class="py-3 px-6 font-mono text-gray-400">boolean</td>
+                <td class="py-3 px-6 font-mono text-gray-400">false</td>
+                <td class="py-3 px-6">Whether to prepend <code>/&lt;filter-name&gt;/</code> in destination S3 paths.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- DAS Record Dimensions Reference Table -->
+      <div class="mt-12 glass rounded-2xl border border-gray-800 overflow-hidden shadow-2xl">
+        <div class="bg-gray-800/80 px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+          <div class="flex items-center gap-2 text-sm font-semibold text-white">
+            <i class="fa-solid fa-table-list text-cyan-400"></i>
+            <span>Database Activity Stream Event Dimensions</span>
+          </div>
+          <span class="text-xs text-gray-400">Parsed Schema</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-gray-800/60 text-gray-200 uppercase text-xs tracking-wider border-b border-gray-700">
+              <tr>
+                <th class="py-3 px-6 font-semibold">Dimension (Field)</th>
+                <th class="py-3 px-6 font-semibold">Type</th>
+                <th class="py-3 px-6 font-semibold">Encoding</th>
+                <th class="py-3 px-6 font-semibold">Description & Examples</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800 text-gray-300 text-xs sm:text-sm">
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">logTime</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Dictionary</td>
+                <td class="py-3 px-6">Execution timestamp (e.g. <code>"2026-10-12 09:30:15.123"</code>).</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">statementId</td>
+                <td class="py-3 px-6 font-mono text-gray-400">int64</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Plain</td>
+                <td class="py-3 px-6">Sequential statement ID within the session.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">substatementId</td>
+                <td class="py-3 px-6 font-mono text-gray-400">int64</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Plain</td>
+                <td class="py-3 px-6">Sequential substatement ID for nested trigger or function executions.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">command</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Dictionary</td>
+                <td class="py-3 px-6">SQL operation (e.g. <code>SELECT</code>, <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, <code>DROP</code>, <code>ALTER</code>).</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">objectType</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Dictionary</td>
+                <td class="py-3 px-6">Database object type accessed (e.g. <code>TABLE</code>, <code>VIEW</code>, <code>INDEX</code>).</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">objectName</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Dictionary</td>
+                <td class="py-3 px-6">Target database object name (e.g. <code>users</code>, <code>payments</code>).</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">databaseName</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Dictionary</td>
+                <td class="py-3 px-6">Active database name (e.g. <code>production_app</code>).</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">dbUserName</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Dictionary</td>
+                <td class="py-3 px-6">Database user account (e.g. <code>app_service</code>, <code>rdsadmin</code>).</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">remoteHost</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Dictionary</td>
+                <td class="py-3 px-6">Client hostname or IP address initiating connection.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">sessionId</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Dictionary</td>
+                <td class="py-3 px-6">Unique database session identifier.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">rowCount</td>
+                <td class="py-3 px-6 font-mono text-gray-400">int64</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Plain</td>
+                <td class="py-3 px-6">Number of rows affected or returned.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">commandText</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Dictionary</td>
+                <td class="py-3 px-6">Full executed SQL statement string.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">paramList</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string[]</td>
+                <td class="py-3 px-6 font-mono text-gray-400">List</td>
+                <td class="py-3 px-6">Bound query parameter values for prepared statements.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">pid</td>
+                <td class="py-3 px-6 font-mono text-gray-400">int64</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Plain</td>
+                <td class="py-3 px-6">Operating system backend process ID.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">clientApplication</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Dictionary</td>
+                <td class="py-3 px-6">Client application or driver name (e.g. <code>psql</code>, <code>pgAdmin</code>).</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">exitCode</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Dictionary</td>
+                <td class="py-3 px-6">Execution status code (e.g. <code>"0"</code>).</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">class</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Dictionary</td>
+                <td class="py-3 px-6">Activity classification (e.g. <code>READ</code>, <code>WRITE</code>, <code>MISC</code>).</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">serverHost</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Dictionary</td>
+                <td class="py-3 px-6">RDS / Aurora instance endpoint handling the request.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">type</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Dictionary</td>
+                <td class="py-3 px-6">Record classification (e.g. <code>record</code>, <code>heartbeat</code>).</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">startTime</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Dictionary</td>
+                <td class="py-3 px-6">Statement execution start timestamp.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-3 px-6 font-mono text-cyan-400 font-semibold">errorMessage</td>
+                <td class="py-3 px-6 font-mono text-gray-400">string</td>
+                <td class="py-3 px-6 font-mono text-gray-400">Dictionary</td>
+                <td class="py-3 px-6">Database error message if statement execution failed.</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
