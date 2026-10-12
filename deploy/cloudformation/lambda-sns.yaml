@@ -16,7 +16,8 @@ Parameters:
 
   KmsKeyArn:
     Type: String
-    Description: 'ARN of the KMS Key used to encrypt the DAS logs.'
+    Default: '*'
+    Description: 'ARN of the KMS Key used to encrypt the DAS logs, or "*" for multi-account / multi-key setups where KMS key policies govern access.'
 
   RdsResourceId:
     Type: String
