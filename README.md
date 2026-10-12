@@ -16,6 +16,21 @@
   <img src="docs/assets/architecture.png" alt="aws-das-processor Architecture Diagram" width="100%">
 </p>
 
+```mermaid
+graph LR
+    RDS[(Amazon RDS / Aurora)] -->|Streams activity records| Kinesis[Kinesis Data Stream]
+    Kinesis -->|Subscribes & delivers| Firehose[Amazon Data Firehose]
+    Firehose -->|Writes raw chunks| S3Source[(Source S3 Bucket)]
+    S3Source -->|EventBridge (Default)| SQS[SQS Queue]
+    S3Source -.->|Classic SNS Fanout| SQS
+    SQS -->|Partial Batch Polling| Lambda[Go Lambda Processor]
+    Lambda -->|KMS Decrypt Context| KMS[AWS KMS]
+    Lambda -->|GZIP / ZLIB Decompress| Decompress[Decompression]
+    Decompress -->|JSON Records| Filter[Declarative YAML Filter DSL]
+    Filter -->|Retained Events| Parquet[Parquet-Go Serialization]
+    Parquet -->|Snappy-compressed Parquet| S3Dest[(Analytics S3 Sink)]
+```
+
 ## Overview & Key Features
 
 `aws-das-processor` is a high-performance Go AWS Lambda consumer designed to process AWS RDS Database Activity Streams (DAS):
@@ -462,6 +477,42 @@ aws cloudformation deploy \
 | `SqsBatchingWindowSeconds` | `0` | Both | Gathering window before invoking Lambda (0–300s). |
 | `SqsMaxReceiveCount` | `5` | Both | Max deliveries before moving message to the dead-letter queue (DLQ). |
 | `LogRetentionDays` | `30` | Both | CloudWatch Logs retention in days. |
+
+---
+
+## Troubleshooting & Common Operational Scenarios
+
+### 1. `Raw AES Keyring was unable to decrypt any encrypted data key ... Expected: keyProviderId: BC`
+- **Cause**: Amazon RDS Database Activity Streams use the legacy BouncyCastle (`"BC"`) provider ID and algorithm suite `0x0178` (`ALG_AES256_GCM_IV12_TAG16_HKDF_SHA256`, non-committing). If a decryption client expects `"aws-kms"` or strictly enforces committing policies (`REQUIRE_ENCRYPT_REQUIRE_DECRYPT`), it rejects the ciphertext header.
+- **Resolution**: `aws-das-processor` automatically configures `ESDKCommitmentPolicyRequireEncryptAllowDecrypt` and chains `"BC"` and `"RawMasterKeyProvider"` in its multi-keyring. If you are using a custom master key provider, set `DAS_KEY_NAMESPACE=<your-provider-id>`.
+
+### 2. `zlib: invalid header`
+- **Cause**: Amazon RDS DAS log chunks may be compressed with GZIP (`0x1F, 0x8B`), standard zlib (`0x78`), or raw uncompressed JSON depending on the database engine version and ingestion stream.
+- **Resolution**: `aws-das-processor` features dynamic payload magic-byte sniffing (`crypto.DecompressPayload`) to automatically route data to the appropriate decompressor. Ensure you are using version `0.1.0` or later.
+
+### 3. `missing RDS resource ID: unable to extract from S3 key and no fallback DAS_RDS_RESOURCE_ID configured`
+- **Cause**: The processor could not find a `cluster-*` or `db-*` token in the incoming S3 key path to construct the AWS KMS encryption context (`aws:rds:dbc-id`).
+- **Resolution**: Ensure Amazon Data Firehose delivers files with the recommended S3 prefix structure:
+  `AWSLogs/<AccountID>/DAS/<Region>/cluster-EXAMPLE1234567890ABCDEF/`
+  Alternatively, configure the fallback environment variable `DAS_RDS_RESOURCE_ID=cluster-EXAMPLE1234567890ABCDEF` in your Lambda deployment.
+
+### 4. Recursive Lambda Execution Loops (Source Bucket == Destination Bucket)
+- **Cause**: If you configure the destination analytical Parquet files to write back to the same S3 bucket as the source raw DAS logs without proper prefix filtering, S3 `ObjectCreated` events will trigger the Lambda recursively on Parquet outputs.
+- **Resolution**:
+  - **Best Practice**: Use a dedicated, separate S3 destination bucket (`DAS_OUTPUT_BUCKET`).
+  - **Shared Bucket**: If you must use a single bucket, ensure EventBridge or SNS rules strictly filter by raw prefix (`prefix: AWSLogs/` or `firehose/`) and that Parquet outputs are written to a separate prefix (`prefix: das/`).
+
+### 5. Firehose Error Delivery Manifests in Dead-Letter Queue (DLQ)
+- **Cause**: When Amazon Data Firehose encounters parsing or delivery retries, it writes JSON error manifests to `ErrorOutputPrefix` (`.../errors/...`). These manifests do not contain DAS records and cause unmarshal failures if consumed as data events.
+- **Resolution**:
+  - The default EventBridge deployment rule natively filters these out with `anything-but.wildcard: ['*/errors/*', '*/error/*']`.
+  - The Go processor runtime provides defense-in-depth via `IsIgnoredS3Key`, gracefully acknowledging and skipping any error objects without DLQ redrives.
+
+### 6. Lambda Throttling & Messages Land in DLQ on Traffic Spikes
+- **Cause**: High database write spikes produce many S3 chunks. If the SQS poller scales up aggressively beyond your Lambda function's available concurrency or `LambdaReservedConcurrency`, invocations fail with HTTP 429 (`RateExceeded`), incrementing `ApproximateReceiveCount` until messages are dropped into the DLQ.
+- **Resolution**:
+  - Set `SqsMaximumConcurrency` (e.g. `20` to `50`) on the Event Source Mapping. This caps the SQS poller fleet so that excess messages wait cleanly in the queue without triggering 429 throttling.
+  - If setting `LambdaReservedConcurrency`, ensure $\text{LambdaReservedConcurrency} \ge \text{SqsMaximumConcurrency}$.
 
 ---
 

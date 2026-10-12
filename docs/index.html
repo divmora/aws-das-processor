@@ -91,6 +91,7 @@
         <a href="#config" class="hover:text-orange-400 transition-colors">Configuration</a>
         <a href="#filtering" class="hover:text-orange-400 transition-colors">Filter DSL</a>
         <a href="#deployment" class="hover:text-orange-400 transition-colors">Deployment</a>
+        <a href="#troubleshooting" class="hover:text-orange-400 transition-colors">Troubleshooting</a>
         <a href="#licensing" class="hover:text-orange-400 transition-colors">Licensing</a>
       </div>
 
@@ -830,6 +831,117 @@ make test-coverage
 
 # Serve documentation locally on http://localhost:8080
 make docs-serve</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Troubleshooting Section -->
+  <section id="troubleshooting" class="py-20 px-6 border-t border-gray-800/60 bg-gray-900/20">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-12">
+        <h2 class="text-xs font-bold uppercase tracking-widest text-orange-400 mb-2">Operational Diagnostics</h2>
+        <h3 class="text-3xl font-bold tracking-tight text-white">Troubleshooting & Failure Modes</h3>
+        <p class="text-gray-400 max-w-2xl mx-auto mt-2">
+          Common real-world issues encountered when consuming Amazon RDS Database Activity Streams and how they are resolved.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <!-- Issue 1 -->
+        <div class="glass rounded-xl p-6 border border-gray-800 hover:border-orange-500/30 transition-all">
+          <div class="flex items-center gap-3 mb-3">
+            <div class="w-8 h-8 rounded-lg bg-orange-500/10 text-orange-400 flex items-center justify-center font-bold text-sm">
+              <i class="fa-solid fa-key"></i>
+            </div>
+            <h4 class="text-sm font-bold text-white">Raw AES Keyring Mismatch (Provider: "BC")</h4>
+          </div>
+          <p class="text-xs text-gray-400 mb-3 leading-relaxed">
+            <span class="text-red-400 font-semibold">Error:</span> <code>EncryptedDataKey did not match AESKeyring. Expected: keyProviderId: BC</code>.
+          </p>
+          <p class="text-xs text-gray-300 leading-relaxed bg-gray-950/60 p-3 rounded-lg border border-gray-800/80">
+            <strong class="text-emerald-400">Resolution:</strong> RDS DAS uses BouncyCastle (<code>"BC"</code>) and non-committing algorithm suite <code>0x0178</code>. The processor automatically configures <code>RequireEncryptAllowDecrypt</code> commitment policy and chains <code>"BC"</code> and <code>"RawMasterKeyProvider"</code> into a MultiKeyring. For custom namespaces, set <code>DAS_KEY_NAMESPACE</code>.
+          </p>
+        </div>
+
+        <!-- Issue 2 -->
+        <div class="glass rounded-xl p-6 border border-gray-800 hover:border-orange-500/30 transition-all">
+          <div class="flex items-center gap-3 mb-3">
+            <div class="w-8 h-8 rounded-lg bg-cyan-500/10 text-cyan-400 flex items-center justify-center font-bold text-sm">
+              <i class="fa-solid fa-file-zipper"></i>
+            </div>
+            <h4 class="text-sm font-bold text-white">Decompression Error: "zlib: invalid header"</h4>
+          </div>
+          <p class="text-xs text-gray-400 mb-3 leading-relaxed">
+            <span class="text-red-400 font-semibold">Error:</span> Payloads fail decompression when the stream wraps data in GZIP instead of raw zlib.
+          </p>
+          <p class="text-xs text-gray-300 leading-relaxed bg-gray-950/60 p-3 rounded-lg border border-gray-800/80">
+            <strong class="text-emerald-400">Resolution:</strong> Handled automatically via <code>crypto.DecompressPayload</code>, which sniffs header magic bytes (<code>0x1F, 0x8B</code> for GZIP, <code>0x78</code> for ZLIB, or plain JSON) prior to decompression.
+          </p>
+        </div>
+
+        <!-- Issue 3 -->
+        <div class="glass rounded-xl p-6 border border-gray-800 hover:border-orange-500/30 transition-all">
+          <div class="flex items-center gap-3 mb-3">
+            <div class="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center font-bold text-sm">
+              <i class="fa-solid fa-database"></i>
+            </div>
+            <h4 class="text-sm font-bold text-white">Missing RDS Resource ID for KMS Context</h4>
+          </div>
+          <p class="text-xs text-gray-400 mb-3 leading-relaxed">
+            <span class="text-red-400 font-semibold">Error:</span> <code>missing RDS resource ID: unable to extract from S3 key</code>.
+          </p>
+          <p class="text-xs text-gray-300 leading-relaxed bg-gray-950/60 p-3 rounded-lg border border-gray-800/80">
+            <strong class="text-emerald-400">Resolution:</strong> Ensure Amazon Data Firehose prefix matches <code>AWSLogs/&lt;AccountID&gt;/DAS/&lt;Region&gt;/cluster-&lt;ID&gt;/</code>, or configure the fallback environment variable <code>DAS_RDS_RESOURCE_ID=cluster-&lt;ID&gt;</code>.
+          </p>
+        </div>
+
+        <!-- Issue 4 -->
+        <div class="glass rounded-xl p-6 border border-gray-800 hover:border-orange-500/30 transition-all">
+          <div class="flex items-center gap-3 mb-3">
+            <div class="w-8 h-8 rounded-lg bg-violet-500/10 text-violet-400 flex items-center justify-center font-bold text-sm">
+              <i class="fa-solid fa-arrows-spin"></i>
+            </div>
+            <h4 class="text-sm font-bold text-white">Recursive S3 Lambda Invocations</h4>
+          </div>
+          <p class="text-xs text-gray-400 mb-3 leading-relaxed">
+            <span class="text-red-400 font-semibold">Risk:</span> Writing Parquet back into the source bucket triggers new S3 event notifications.
+          </p>
+          <p class="text-xs text-gray-300 leading-relaxed bg-gray-950/60 p-3 rounded-lg border border-gray-800/80">
+            <strong class="text-emerald-400">Resolution:</strong> Designate a distinct destination S3 bucket (<code>DAS_OUTPUT_BUCKET</code>) or enforce strict S3/EventBridge prefix filters separating incoming raw logs from the output <code>das/</code> prefix.
+          </p>
+        </div>
+
+        <!-- Issue 5 -->
+        <div class="glass rounded-xl p-6 border border-gray-800 hover:border-orange-500/30 transition-all">
+          <div class="flex items-center gap-3 mb-3">
+            <div class="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center font-bold text-sm">
+              <i class="fa-solid fa-triangle-exclamation"></i>
+            </div>
+            <h4 class="text-sm font-bold text-white">Firehose Error Manifests in SQS/DLQ</h4>
+          </div>
+          <p class="text-xs text-gray-400 mb-3 leading-relaxed">
+            <span class="text-red-400 font-semibold">Issue:</span> Data Firehose writes delivery error logs to <code>ErrorOutputPrefix</code> (<code>.../errors/...</code>), causing JSON parse errors.
+          </p>
+          <p class="text-xs text-gray-300 leading-relaxed bg-gray-950/60 p-3 rounded-lg border border-gray-800/80">
+            <strong class="text-emerald-400">Resolution:</strong> Filtered at the bus by EventBridge (<code>anything-but.wildcard: ['*/errors/*', '*/error/*']</code>) and skipped safely at runtime via <code>IsIgnoredS3Key</code> without DLQ retries.
+          </p>
+        </div>
+
+        <!-- Issue 6 -->
+        <div class="glass rounded-xl p-6 border border-gray-800 hover:border-orange-500/30 transition-all">
+          <div class="flex items-center gap-3 mb-3">
+            <div class="w-8 h-8 rounded-lg bg-rose-500/10 text-rose-400 flex items-center justify-center font-bold text-sm">
+              <i class="fa-solid fa-gauge-high"></i>
+            </div>
+            <h4 class="text-sm font-bold text-white">Lambda Throttling & Messages Land in DLQ</h4>
+          </div>
+          <p class="text-xs text-gray-400 mb-3 leading-relaxed">
+            <span class="text-red-400 font-semibold">Issue:</span> SQS poller scales up too fast on traffic bursts, hitting function concurrency limits and throwing HTTP 429.
+          </p>
+          <p class="text-xs text-gray-300 leading-relaxed bg-gray-950/60 p-3 rounded-lg border border-gray-800/80">
+            <strong class="text-emerald-400">Resolution:</strong> Configure <code>SqsMaximumConcurrency</code> (e.g. <code>50</code>) on the Event Source Mapping so excess messages wait in SQS without throttling or premature DLQ drops.
+          </p>
         </div>
       </div>
     </div>
