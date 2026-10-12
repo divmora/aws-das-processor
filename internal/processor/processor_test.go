@@ -510,6 +510,21 @@ func TestProcessor_ProcessSQSEvent_PartialBatchFailure(t *testing.T) {
 	}
 }
 
+func TestValidateRDSResourceID(t *testing.T) {
+	if err := ValidateRDSResourceID(""); err == nil {
+		t.Error("expected error for empty resource ID, got nil")
+	}
+	if err := ValidateRDSResourceID("   \t\n "); err == nil {
+		t.Error("expected error for whitespace resource ID, got nil")
+	}
+	if err := ValidateRDSResourceID("cluster-EXAMPLE1234567890ABCDEF"); err != nil {
+		t.Errorf("expected nil error for valid cluster ID, got: %v", err)
+	}
+	if err := ValidateRDSResourceID("db-EXAMPLE1234567890ABCDEF"); err != nil {
+		t.Errorf("expected nil error for valid db ID, got: %v", err)
+	}
+}
+
 func TestProcessor_ProcessMessage_MissingResourceID(t *testing.T) {
 	ctx := context.Background()
 	p := New(&mockS3Client{}, &mockKMSClient{})
@@ -520,9 +535,16 @@ func TestProcessor_ProcessMessage_MissingResourceID(t *testing.T) {
 		Body:      s3NotifJSON,
 	}
 
+	// 1. Empty fallback
 	err := p.ProcessMessage(ctx, msg, "")
 	if err == nil || !strings.Contains(err.Error(), "missing RDS resource ID") {
-		t.Fatalf("expected missing resource ID error, got %v", err)
+		t.Fatalf("expected missing resource ID error for empty fallback, got %v", err)
+	}
+
+	// 2. Whitespace fallback
+	errWhitespace := p.ProcessMessage(ctx, msg, "   ")
+	if errWhitespace == nil || !strings.Contains(errWhitespace.Error(), "missing RDS resource ID") {
+		t.Fatalf("expected missing resource ID error for whitespace fallback, got %v", errWhitespace)
 	}
 }
 

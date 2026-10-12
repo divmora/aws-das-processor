@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -37,6 +38,12 @@ func init() {
 		slog.Info("Successfully pre-loaded filter configurations", "dir", filtersDir, "count", len(configs))
 	} else {
 		slog.Warn("No filter configurations loaded from filters directory", "dir", filtersDir)
+	}
+
+	if envResID := strings.TrimSpace(os.Getenv("DAS_RDS_RESOURCE_ID")); envResID != "" {
+		slog.Info("Configured static fallback RDS Resource ID", "ResourceID", envResID)
+	} else {
+		slog.Info("No static DAS_RDS_RESOURCE_ID configured; RDS Resource ID will be dynamically discovered from S3 object key paths")
 	}
 }
 

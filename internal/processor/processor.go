@@ -255,8 +255,20 @@ func (p *Processor) ProcessMessage(ctx context.Context, message events.SQSMessag
 		}
 
 		clusterID := ExtractRDSResourceID(key, rdsResourceID)
-		if clusterID == "" {
-			return fmt.Errorf("missing RDS resource ID: unable to extract from S3 key %q and no fallback DAS_RDS_RESOURCE_ID configured", key)
+		if err := ValidateRDSResourceID(clusterID); err != nil {
+			slog.Error("Missing RDS Resource ID for KMS encryption context: unable to extract from S3 key and no fallback DAS_RDS_RESOURCE_ID configured",
+				"SourceBucket", sourceBucket,
+				"Key", key,
+				"error", err,
+			)
+			return fmt.Errorf("missing RDS resource ID: unable to extract from S3 key %q and no fallback DAS_RDS_RESOURCE_ID configured: %w", key, err)
+		}
+
+		if !strings.HasPrefix(clusterID, "cluster-") && !strings.HasPrefix(clusterID, "db-") {
+			slog.Warn("RDS Resource ID does not follow standard 'cluster-' or 'db-' prefix; KMS encryption context 'aws:rds:dbc-id' may fail decryption",
+				"ResourceID", clusterID,
+				"Key", key,
+			)
 		}
 
 		matchedFilters := p.ResolveFiltersForEvent(clusterID, key, customFilters, sourceBucket)
@@ -444,20 +456,30 @@ func (p *Processor) ProcessMessage(ctx context.Context, message events.SQSMessag
 	return nil
 }
 
+// ValidateRDSResourceID verifies that an RDS Resource ID is non-empty and well-formed
+// for use as the AWS KMS encryption context ("aws:rds:dbc-id").
+func ValidateRDSResourceID(id string) error {
+	trimmed := strings.TrimSpace(id)
+	if trimmed == "" {
+		return errors.New("RDS resource ID cannot be empty or whitespace")
+	}
+	return nil
+}
+
 // ExtractRDSResourceID dynamically discovers the RDS Resource ID from S3 key directory segments.
 // It searches directory segments for Aurora DB cluster identifiers (prefixed with "cluster-")
 // or RDS DB instance identifiers (prefixed with "db-"). The last segment (the object name itself)
 // is excluded from matching regardless of whether it has a file suffix or not.
-// If no matching segment is found, it returns the provided fallback value.
+// If no matching segment is found, it returns the trimmed fallback value.
 func ExtractRDSResourceID(s3Key, fallback string) string {
 	parts := strings.Split(s3Key, "/")
 	for i := 0; i < len(parts)-1; i++ {
-		part := parts[i]
+		part := strings.TrimSpace(parts[i])
 		if strings.HasPrefix(part, "cluster-") || strings.HasPrefix(part, "db-") {
 			return part
 		}
 	}
-	return fallback
+	return strings.TrimSpace(fallback)
 }
 
 // ResolveKMSRegion resolves the AWS region to use for KMS envelope decryption:
