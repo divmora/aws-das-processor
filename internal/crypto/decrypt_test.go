@@ -2,8 +2,10 @@ package crypto
 
 import (
 	"bytes"
+	"compress/gzip"
 	"compress/zlib"
 	"context"
+	"strings"
 	"testing"
 
 	mpl "github.com/aws/aws-cryptographic-material-providers-library/releases/go/mpl/awscryptographymaterialproviderssmithygenerated"
@@ -11,6 +13,54 @@ import (
 	client "github.com/aws/aws-encryption-sdk/releases/go/encryption-sdk/awscryptographyencryptionsdksmithygenerated"
 	esdktypes "github.com/aws/aws-encryption-sdk/releases/go/encryption-sdk/awscryptographyencryptionsdksmithygeneratedtypes"
 )
+
+// TestDecompressPayload_Gzip tests standard AWS RDS Database Activity Streams gzip format decompression.
+func TestDecompressPayload_Gzip(t *testing.T) {
+	originalData := []byte("{\"databaseActivityEventList\": [{\"logTime\": \"2026-10-12 12:43:25\", \"command\": \"SELECT 1\"}]}")
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	_, err := gw.Write(originalData)
+	if err != nil {
+		t.Fatalf("failed to write gzip: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("failed to close gzip writer: %v", err)
+	}
+
+	decompressed, err := DecompressPayload(buf.Bytes())
+	if err != nil {
+		t.Fatalf("failed to decompress gzip: %v", err)
+	}
+
+	if string(decompressed) != string(originalData) {
+		t.Errorf("expected %q, got %q", string(originalData), string(decompressed))
+	}
+}
+
+// TestDecompressPayload_RawJSON tests that uncompressed JSON payloads pass through directly.
+func TestDecompressPayload_RawJSON(t *testing.T) {
+	originalJSON := []byte("{\"databaseActivityEventList\": []}")
+	decompressed, err := DecompressPayload(originalJSON)
+	if err != nil {
+		t.Fatalf("unexpected error for raw JSON: %v", err)
+	}
+	if string(decompressed) != string(originalJSON) {
+		t.Errorf("expected %q, got %q", string(originalJSON), string(decompressed))
+	}
+}
+
+// TestDecompressPayload_UnrecognizedFormat tests that unrecognized bytes return descriptive error with magic bytes.
+func TestDecompressPayload_UnrecognizedFormat(t *testing.T) {
+	corrupted := []byte{0xde, 0xad, 0xbe, 0xef}
+	_, err := DecompressPayload(corrupted)
+	if err == nil {
+		t.Fatal("expected error on unrecognized format, got nil")
+	}
+	if !strings.Contains(err.Error(), "unrecognized payload format") {
+		t.Errorf("expected error to mention unrecognized format, got: %v", err)
+	}
+}
 
 // TestDecompressZlib_Valid tests round-trip zlib compression and decompression.
 func TestDecompressZlib_Valid(t *testing.T) {

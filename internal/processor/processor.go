@@ -392,8 +392,8 @@ func (p *Processor) ProcessMessage(ctx context.Context, message events.SQSMessag
 				return fmt.Errorf("failed to decrypt events payload: %w", err)
 			}
 
-			// 5. Decompress the payload
-			decompressedPayload, err := crypto.DecompressZlib(decryptedPayload)
+			// 5. Decompress the payload (auto-detects gzip, zlib, or uncompressed JSON)
+			decompressedPayload, err := crypto.DecompressPayload(decryptedPayload)
 			if err != nil {
 				return fmt.Errorf("failed to decompress events payload: %w", err)
 			}

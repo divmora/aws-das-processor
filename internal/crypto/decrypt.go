@@ -2,10 +2,12 @@ package crypto
 
 import (
 	"bytes"
+	"compress/gzip"
 	"compress/zlib"
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -81,17 +83,63 @@ func DecryptAWSEncryptionSDKPayload(ctx context.Context, ciphertext, plaintextDa
 	return decryptOutput.Plaintext, nil
 }
 
-// DecompressZlib decompresses zlib formatted data with decompression bomb protection.
-func DecompressZlib(data []byte) ([]byte, error) {
-	reader, err := zlib.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return nil, err
+// DecompressPayload inspects the payload's magic header bytes prior to decompression:
+// 1. GZIP (magic bytes 0x1F, 0x8B per RFC 1952) - standard AWS RDS Database Activity Streams format.
+// 2. ZLIB (RFC 1950: CMF=0x78 or (CMF&0x0F)==8, and (CMF*256+FLG)%31 == 0).
+// 3. Raw JSON (starts with '{' or '[').
+// It decompresses with decompression bomb protection (capped at MaxDecompressedSize).
+func DecompressPayload(data []byte) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty input payload")
 	}
-	defer reader.Close()
 
-	var out bytes.Buffer
-	if _, err := io.Copy(&out, io.LimitReader(reader, MaxDecompressedSize)); err != nil {
-		return nil, err
+	// 1. Check for uncompressed JSON (starts with '{' or '[')
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+		slog.Debug("Detected uncompressed JSON payload, skipping decompression")
+		return data, nil
 	}
-	return out.Bytes(), nil
+
+	// 2. Inspect for GZIP header (0x1F, 0x8B) - standard AWS RDS Database Activity Streams format
+	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+		slog.Debug("Detected GZIP compressed payload, decompressing via compress/gzip")
+		reader, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize gzip reader: %w", err)
+		}
+		defer reader.Close()
+
+		var out bytes.Buffer
+		if _, err := io.Copy(&out, io.LimitReader(reader, MaxDecompressedSize)); err != nil {
+			return nil, fmt.Errorf("failed to decompress gzip payload: %w", err)
+		}
+		return out.Bytes(), nil
+	}
+
+	// 3. Inspect for ZLIB header (RFC 1950: CMF & 0x0F == 8 and (CMF*256 + FLG) % 31 == 0)
+	if len(data) >= 2 && (data[0]&0x0F) == 8 && (int(data[0])*256+int(data[1]))%31 == 0 {
+		slog.Debug("Detected ZLIB compressed payload, decompressing via compress/zlib")
+		reader, err := zlib.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize zlib reader: %w", err)
+		}
+		defer reader.Close()
+
+		var out bytes.Buffer
+		if _, err := io.Copy(&out, io.LimitReader(reader, MaxDecompressedSize)); err != nil {
+			return nil, fmt.Errorf("failed to decompress zlib payload: %w", err)
+		}
+		return out.Bytes(), nil
+	}
+
+	headerPreview := ""
+	for i := 0; i < len(data) && i < 4; i++ {
+		headerPreview += fmt.Sprintf("%02x ", data[i])
+	}
+	return nil, fmt.Errorf("unrecognized payload format (magic bytes: %s; expected gzip 1f 8b, zlib 78 xx, or JSON)", strings.TrimSpace(headerPreview))
+}
+
+// DecompressZlib is an alias for DecompressPayload preserving backward compatibility.
+func DecompressZlib(data []byte) ([]byte, error) {
+	return DecompressPayload(data)
 }
