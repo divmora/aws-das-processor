@@ -21,7 +21,7 @@
 `aws-das-processor` is a high-performance Go AWS Lambda consumer designed to process AWS RDS Database Activity Streams (DAS):
 - **Decoupled SQS Ingestion**: Flexible decoupled ingestion supporting both modern **Amazon EventBridge to SQS** (default) and classic **Amazon SNS to SQS** fanout, with SQS partial batch failure handling (`ReportBatchItemFailures`).
 - **Dynamic Resource ID & Envelope Decryption**: Decrypts raw encrypted DAS log payloads using AWS KMS and the AWS Encryption SDK for Go. Automatically extracts the RDS Resource ID (`cluster-*` or `db-*`) from incoming S3 key prefixes with fallback to `DAS_RDS_RESOURCE_ID` for KMS encryption context matching.
-- **Decompression & Streaming**: Decompresses zlib payloads and parses database activity event records.
+- **Decompression & Streaming**: Decompresses GZIP and zlib payloads (with automatic magic byte detection) and parses database activity event records.
 - **Multi-Filter Matching Engine**: Evaluates activity records against multiple filter rule-sets simultaneously (`filters/*.yaml`). Downloads and decrypts the encrypted payload **once**, then fans out to all matching filters in memory to generate distinct analytical datasets with minimal KMS API cost and Lambda execution latency.
 - **Configurable Event Filtering**: Heartbeat pruning, field-dropping (e.g. sensitive query literals or client MACs), and recursive AST query rules (`selector`, `dimensionExists`, `and`, `or`, `not`, `contains`).
 - **Parquet Serialization & Partitioning**: Converts filtered records to compressed Apache Parquet format and sinks them into an analytical S3 destination bucket partitioned by Hive partition projection (`cluster=.../year=...`), standard date hierarchy, or mirrored paths.
@@ -266,6 +266,8 @@ All records produced by RDS Database Activity Streams are parsed and mapped to t
 | `DAS_OUTPUT_PREFIX` | `das` | Base S3 prefix in destination bucket. Configurable in filter files under `output.prefix`. |
 | `DAS_OUTPUT_INCLUDE_FILTER` | `false` | Whether to include `/<filter-name>/` in the destination path (`true`/`false`). Recommended `true` when running multiple filters. |
 | `DAS_OUTPUT_KMS_KEY_ID` | `""` | Optional AWS KMS key ID/ARN to enforce SSE-KMS encryption on output Parquet objects. |
+| `DAS_KEY_NAME` | `DataKey` | Key name for the AWS Encryption SDK raw AES keyring (standard RDS DAS key name). |
+| `DAS_KEY_NAMESPACE` | `""` | Optional custom key provider namespace for raw AES keyring decryption. Defaults to `"BC"` (BouncyCastle) and `"RawMasterKeyProvider"`. |
 
 ### Dynamic RDS Resource ID Discovery
 
@@ -438,6 +440,28 @@ aws cloudformation deploy \
     KmsKeyArn=arn:aws:kms:us-east-1:123456789012:key/your-das-key-id \
     LambdaImageUri=123456789012.dkr.ecr.us-east-1.amazonaws.com/aws-das-processor:latest
 ```
+
+### CloudFormation Parameters Reference
+
+| Parameter | Default | Applies To | Description |
+|:---|:---|:---|:---|
+| `DasSourceBucketNames` | *(Required)* | EventBridge (`lambda.yaml`) | Comma-delimited list of source S3 bucket names (EventBridge enabled). |
+| `DasSnsTopicArn` | *(Required)* | SNS (`lambda-sns.yaml`) | Existing SNS topic ARN receiving S3 ObjectCreated notifications. |
+| `DasSourceBucketArns` | *(Required)* | SNS (`lambda-sns.yaml`) | Comma-delimited list of source S3 bucket ARNs for queue policy. |
+| `DasDestinationBucketName` | *(Required)* | Both | Destination analytical S3 bucket for Parquet output (`DAS_OUTPUT_BUCKET`). |
+| `LambdaImageUri` | *(Required)* | Both | ECR container image URI for `aws-das-processor`. |
+| `KmsKeyArn` | `*` | Both | KMS Key ARN used to encrypt raw DAS logs (`*` for multi-key environments). |
+| `RdsResourceId` | `""` | Both | Optional fallback RDS Resource ID (`DAS_RDS_RESOURCE_ID`). |
+| `DasFiltersDir` | `""` | Both | Custom filter directory path (`DAS_FILTERS_DIR`). Defaults to `${LAMBDA_TASK_ROOT}/filters`. |
+| `LambdaReservedConcurrency` | `-1` | Both | Reserved concurrent executions for the Lambda function (`-1` = unreserved account pool, `0` = throttled, positive integer = dedicated cap). |
+| `SqsMaximumConcurrency` | `50` | Both | Maximum concurrent Lambda invocations triggered by SQS poller via `ScalingConfig` (2–1000). |
+| `LambdaMemorySize` | `512` | Both | Function memory in MB (`256`, `512`, `1024`, `1536`, `2048`, `3072`). |
+| `LambdaTimeout` | `120` | Both | Function execution timeout in seconds (10–900). |
+| `SqsVisibilityTimeout` | `720` | Both | SQS queue visibility timeout in seconds ($\ge$ 6x Lambda timeout). |
+| `SqsBatchSize` | `10` | Both | Maximum SQS messages per Lambda invocation (1–10). |
+| `SqsBatchingWindowSeconds` | `0` | Both | Gathering window before invoking Lambda (0–300s). |
+| `SqsMaxReceiveCount` | `5` | Both | Max deliveries before moving message to the dead-letter queue (DLQ). |
+| `LogRetentionDays` | `30` | Both | CloudWatch Logs retention in days. |
 
 ---
 

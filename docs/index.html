@@ -181,7 +181,7 @@ graph LR
     S3Source -.->|Classic SNS Fanout| SQS
     SQS -->|Partial Batch Polling| Lambda[Go Lambda Processor]
     Lambda -->|KMS Decrypt Context| KMS[AWS KMS]
-    Lambda -->|zlib Decompress| Decompress[Decompression]
+    Lambda -->|GZIP / ZLIB Decompress| Decompress[Decompression]
     Decompress -->|JSON Records| Filter[Declarative YAML Filter DSL]
     Filter -->|Retained Events| Parquet[Parquet-Go Serialization]
     Parquet -->|Snappy-compressed Parquet| S3Dest[(Analytics S3 Sink)]
@@ -335,6 +335,21 @@ graph LR
                 <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_OUTPUT_INCLUDE_FILTER</td>
                 <td class="py-4 px-6 font-mono text-gray-400">false</td>
                 <td class="py-4 px-6">Whether to include <code>/&lt;filter-name&gt;/</code> in destination S3 paths (<code>true</code> / <code>false</code>). Recommended <code>true</code> when running multiple filters.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_OUTPUT_KMS_KEY_ID</td>
+                <td class="py-4 px-6 font-mono text-gray-400">""</td>
+                <td class="py-4 px-6">Optional AWS KMS Key ID or ARN to enforce server-side encryption (SSE-KMS) on destination Parquet files. Defaults to filter file <code>output.kms_key_id</code>.</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_KEY_NAME</td>
+                <td class="py-4 px-6 font-mono text-gray-400">DataKey</td>
+                <td class="py-4 px-6">Key name used for the AWS Encryption SDK raw AES keyring (standard RDS DAS key name).</td>
+              </tr>
+              <tr class="hover:bg-gray-800/30 transition-colors">
+                <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_KEY_NAMESPACE</td>
+                <td class="py-4 px-6 font-mono text-gray-400">""</td>
+                <td class="py-4 px-6">Optional custom key provider namespace for raw AES keyring decryption. MultiKeyring defaults to <code>"BC"</code> (AWS RDS BouncyCastle) and <code>"RawMasterKeyProvider"</code>.</td>
               </tr>
             </tbody>
           </table>
@@ -786,6 +801,11 @@ output:
     DasDestinationBucketName=analytics-das-parquet-bucket \
     KmsKeyArn=arn:aws:kms:us-east-1:123456789012:key/your-das-key-id \
     LambdaImageUri=123456789012.dkr.ecr.us-east-1.amazonaws.com/aws-das-processor:latest</code></pre>
+            </div>
+
+            <div class="pt-2 text-xs text-gray-400 border-t border-gray-800">
+              <span class="text-orange-400 font-semibold"><i class="fa-solid fa-sliders mr-1"></i>Concurrency Controls:</span>
+              Tune scaling via <code class="text-orange-300">LambdaReservedConcurrency</code> (dedicated/capped function executions) and <code class="text-orange-300">SqsMaximumConcurrency</code> (caps SQS poller scaling between 2 and 1000).
             </div>
           </div>
         </div>
