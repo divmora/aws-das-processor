@@ -93,7 +93,7 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       MessageRetentionPeriod: 1209600 # 14 days
-      KmsMasterKeyId: alias/aws/sqs # SSE encryption for DLQ
+      SqsManagedSseEnabled: true # SQS-managed server-side encryption (works seamlessly with SNS & service principals)
 
   # 2. SQS Queue for Fanout
   ProcessorQueue:
@@ -101,7 +101,7 @@ Resources:
     Properties:
       VisibilityTimeout: !Ref SqsVisibilityTimeout
       MessageRetentionPeriod: 1209600 # 14 days
-      KmsMasterKeyId: alias/aws/sqs # SSE encryption for queue
+      SqsManagedSseEnabled: true # SQS-managed server-side encryption (works seamlessly with SNS & service principals)
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt ProcessorDeadLetterQueue.Arn
         maxReceiveCount: !Ref SqsMaxReceiveCount
