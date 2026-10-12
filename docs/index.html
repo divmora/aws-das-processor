@@ -303,8 +303,8 @@ graph LR
             <tbody class="divide-y divide-gray-800 text-gray-300">
               <tr class="hover:bg-gray-800/30 transition-colors">
                 <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_FILTERS_DIR</td>
-                <td class="py-4 px-6 font-mono text-gray-400">"filters"</td>
-                <td class="py-4 px-6">Directory path containing filter rule files (<code>.yaml</code>, <code>.yml</code>, <code>.json</code>). Filters are automatically discovered and matched in memory against incoming event cluster IDs and S3 paths.</td>
+                <td class="py-4 px-6 font-mono text-gray-400">${LAMBDA_TASK_ROOT}/filters or "filters"</td>
+                <td class="py-4 px-6">Directory path containing filter rule files (<code>.yaml</code>). In AWS Lambda, automatically discovers <code>${LAMBDA_TASK_ROOT}/filters</code>. Pre-loaded into memory on cold start.</td>
               </tr>
               <tr class="hover:bg-gray-800/30 transition-colors">
                 <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_RDS_RESOURCE_ID</td>

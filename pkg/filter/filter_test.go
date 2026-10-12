@@ -791,3 +791,85 @@ func TestLoadFilterConfigFromDir(t *testing.T) {
 		t.Errorf("expected custom config, got %+v", cfg.Drop)
 	}
 }
+
+func TestEvaluateFilter_UserClusterQuery(t *testing.T) {
+	yamlContent := []byte(`
+name: audit
+query:
+  type: or
+  fields:
+    - type: and
+      fields:
+        - type: dimensionExists
+          dimension: command
+        - type: not
+          field:
+            type: selector
+            dimension: command
+            value: DEALLOCATE
+        - type: not
+          field:
+            type: and
+            fields:
+              - type: selector
+                dimension: command
+                value: SET
+              - type: selector
+                dimension: commandText
+                value: "set names 'utf8'"
+`)
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "audit.yaml")
+	if err := os.WriteFile(filePath, yamlContent, 0644); err != nil {
+		t.Fatalf("failed to write test yaml: %v", err)
+	}
+
+	cfg, err := LoadFilterFile(filePath)
+	if err != nil {
+		t.Fatalf("failed to load filter file: %v", err)
+	}
+
+	// 1. Regular SELECT query -> matches
+	recSelect := map[string]interface{}{
+		"command":     "SELECT",
+		"commandText": "SELECT * FROM users",
+	}
+	if !EvaluateFilter(recSelect, cfg.Query) {
+		t.Errorf("expected SELECT query to match filter")
+	}
+
+	// 2. DEALLOCATE query -> filtered out
+	recDeallocate := map[string]interface{}{
+		"command":     "DEALLOCATE",
+		"commandText": "DEALLOCATE PREPARE stmt",
+	}
+	if EvaluateFilter(recDeallocate, cfg.Query) {
+		t.Errorf("expected DEALLOCATE query to be filtered out")
+	}
+
+	// 3. SET set names 'utf8' -> filtered out
+	recSetUtf8 := map[string]interface{}{
+		"command":     "SET",
+		"commandText": "set names 'utf8'",
+	}
+	if EvaluateFilter(recSetUtf8, cfg.Query) {
+		t.Errorf("expected SET names 'utf8' to be filtered out")
+	}
+
+	// 4. Other SET query (e.g. SET autocommit=0) -> matches
+	recSetOther := map[string]interface{}{
+		"command":     "SET",
+		"commandText": "SET autocommit=0",
+	}
+	if !EvaluateFilter(recSetOther, cfg.Query) {
+		t.Errorf("expected SET autocommit=0 to match filter")
+	}
+
+	// 5. Record without command field -> filtered out
+	recNoCommand := map[string]interface{}{
+		"commandText": "SELECT 1",
+	}
+	if EvaluateFilter(recNoCommand, cfg.Query) {
+		t.Errorf("expected record without command dimension to be filtered out")
+	}
+}

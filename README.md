@@ -22,7 +22,7 @@
 - **Decoupled SQS Ingestion**: Flexible decoupled ingestion supporting both modern **Amazon EventBridge to SQS** (default) and classic **Amazon SNS to SQS** fanout, with SQS partial batch failure handling (`ReportBatchItemFailures`).
 - **Dynamic Resource ID & Envelope Decryption**: Decrypts raw encrypted DAS log payloads using AWS KMS and the AWS Encryption SDK for Go. Automatically extracts the RDS Resource ID (`cluster-*` or `db-*`) from incoming S3 key prefixes with fallback to `DAS_RDS_RESOURCE_ID` for KMS encryption context matching.
 - **Decompression & Streaming**: Decompresses zlib payloads and parses database activity event records.
-- **Multi-Filter Matching Engine**: Evaluates activity records against multiple filter rule-sets simultaneously (`filters/*.yaml`, `filters/*.json`). Downloads and decrypts the encrypted payload **once**, then fans out to all matching filters in memory to generate distinct analytical datasets with minimal KMS API cost and Lambda execution latency.
+- **Multi-Filter Matching Engine**: Evaluates activity records against multiple filter rule-sets simultaneously (`filters/*.yaml`). Downloads and decrypts the encrypted payload **once**, then fans out to all matching filters in memory to generate distinct analytical datasets with minimal KMS API cost and Lambda execution latency.
 - **Configurable Event Filtering**: Heartbeat pruning, field-dropping (e.g. sensitive query literals or client MACs), and recursive AST query rules (`selector`, `dimensionExists`, `and`, `or`, `not`, `contains`).
 - **Parquet Serialization & Partitioning**: Converts filtered records to compressed Apache Parquet format and sinks them into an analytical S3 destination bucket partitioned by Hive partition projection (`cluster=.../year=...`), standard date hierarchy, or mirrored paths.
 
@@ -69,7 +69,7 @@ A single RDS Database Activity Stream often feeds multiple analytical consumers 
 
 ### Filter Matching Rules & Schema
 
-Each filter profile defined in `filters/<name>.yaml` (or `.json`) supports granular matching conditions:
+Each filter profile defined in `filters/<name>.yaml` supports granular matching conditions:
 
 ```yaml
 name: compliance
@@ -111,7 +111,7 @@ output:
 
 | Variable | Default | Description |
 |:---|:---|:---|
-| `DAS_FILTERS_DIR` | `"filters"` | Path to the directory containing `.yaml`, `.yml`, or `.json` filter rules. |
+| `DAS_FILTERS_DIR` | `${LAMBDA_TASK_ROOT}/filters` or `"filters"` | Path to the directory containing `.yaml` filter rules. In AWS Lambda, automatically discovers `${LAMBDA_TASK_ROOT}/filters`. |
 | `DAS_RDS_RESOURCE_ID` | `""` | Fallback RDS Resource ID (e.g. `cluster-EXAMPLE1234567890ABCDEF`) for KMS encryption context. Automatically discovered from S3 object key paths (`cluster-*` or `db-*`) if present. |
 | `DAS_KMS_REGION_NAME` | Current AWS Region | Fallback AWS Region for KMS envelope decryption when not specified in the matching filter (`kms_region`). |
 | `DAS_OUTPUT_BUCKET` | Source Bucket | Destination S3 analytical bucket for writing processed Parquet files (defaults to the incoming source bucket if unset). |
@@ -171,7 +171,7 @@ This allows a centralized processor deployed in a single region (e.g., `us-east-
 
 ### Destination S3 Partitioning & Bucket Routing
 
-Destination S3 buckets, encryption keys, and partitioning formats are configurable per filter profile in `filters/<name>.yaml` (or `.json`) under the `output` block:
+Destination S3 buckets, encryption keys, and partitioning formats are configurable per filter profile in `filters/<name>.yaml` under the `output` block:
 
 ```yaml
 output:
