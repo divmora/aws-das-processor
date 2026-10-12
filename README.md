@@ -19,7 +19,7 @@
 ## Overview & Key Features
 
 `aws-das-processor` is a high-performance Go AWS Lambda consumer designed to process AWS RDS Database Activity Streams (DAS):
-- **SQS Fanout Ingestion**: Decoupled S3 bucket notification via SNS to SQS with SQS partial batch failure handling (`ReportBatchItemFailures`).
+- **Decoupled SQS Ingestion**: Flexible decoupled ingestion supporting both modern **Amazon EventBridge to SQS** (default) and classic **Amazon SNS to SQS** fanout, with SQS partial batch failure handling (`ReportBatchItemFailures`).
 - **Dynamic Resource ID & Envelope Decryption**: Decrypts raw encrypted DAS log payloads using AWS KMS and the AWS Encryption SDK for Go. Automatically extracts the RDS Resource ID (`cluster-*` or `db-*`) from incoming S3 key prefixes with fallback to `DAS_RDS_RESOURCE_ID` for KMS encryption context matching.
 - **Decompression & Streaming**: Decompresses zlib payloads and parses database activity event records.
 - **Multi-Filter Matching Engine**: Evaluates activity records against multiple filter rule-sets simultaneously (`filters/*.yaml`, `filters/*.json`). Downloads and decrypts the encrypted payload **once**, then fans out to all matching filters in memory to generate distinct analytical datasets with minimal KMS API cost and Lambda execution latency.
@@ -74,6 +74,7 @@ Each filter profile defined in `filters/<name>.yaml` (or `.json`) supports granu
 ```yaml
 name: compliance
 enabled: true # Set to false to disable without deleting the file
+kms_region: "eu-west-1" # Optional: AWS region of source KMS CMK for cross-region decryption
 match:
   clusters:
     - "cluster-EXAMPLE1234567890ABCDEF" # Exact cluster match
@@ -98,6 +99,7 @@ output:
 ```
 
 - **`enabled`**: Optional boolean (`true` by default). Set to `false` to temporarily skip a filter without deleting the rule file.
+- **`kms_region`**: Optional AWS region where the RDS KMS customer managed key (CMK) resides. Enables cross-region decryption when databases reside across multiple AWS regions.
 - **`match.clusters`**: List of RDS DB cluster/instance patterns. If non-empty, the event's cluster ID must match at least one pattern.
 - **`match.paths`**: List of S3 key patterns or directory prefixes. If non-empty, the incoming S3 key must match at least one pattern.
 - If both `clusters` and `paths` are configured, **both** must match (AND condition).
@@ -110,7 +112,7 @@ output:
 |:---|:---|:---|
 | `DAS_FILTERS_DIR` | `"filters"` | Path to the directory containing `.yaml`, `.yml`, or `.json` filter rules. |
 | `DAS_RDS_RESOURCE_ID` | `""` | Fallback RDS Resource ID (e.g. `cluster-EXAMPLE1234567890ABCDEF`) for KMS encryption context. Automatically discovered from S3 object key paths (`cluster-*` or `db-*`) if present. |
-| `DAS_KMS_REGION_NAME` | Current AWS Region | AWS Region where the KMS customer managed key (CMK) resides. |
+| `DAS_KMS_REGION_NAME` | Current AWS Region | Fallback AWS Region for KMS envelope decryption when not specified in the matching filter (`kms_region`). |
 | `DAS_OUTPUT_BUCKET` | Source Bucket | Destination S3 analytical bucket for writing processed Parquet files (defaults to the incoming source bucket if unset). |
 | `DAS_OUTPUT_FORMAT` | `hive` | Output partition format override (`hive`, `date`, `mirrored`). Configurable in filter files under `output.format`. |
 | `DAS_OUTPUT_PREFIX` | `das` | Base S3 prefix in destination bucket. Configurable in filter files under `output.prefix`. |
@@ -122,11 +124,47 @@ output:
 `aws-das-processor` dynamically inspects S3 object key paths to extract the RDS DB cluster identifier (`cluster-...`) or DB instance identifier (`db-...`) needed for the AWS KMS encryption context (`aws:rds:dbc-id`).
 
 It is prefix-agnostic and supports various delivery topologies:
-- **Kinesis Data Firehose delivery**: `firehose/cluster-EXAMPLE1234567890ABCDEF/YYYY/MM/DD/HH/...`
+- **Standard Firehose DAS prefix**: `AWSLogs/<AccountID>/DAS/<Region>/cluster-EXAMPLE1234567890ABCDEF/YYYY/MM/DD/HH/...`
+- **Generic Firehose delivery**: `firehose/cluster-EXAMPLE1234567890ABCDEF/YYYY/MM/DD/HH/...`
 - **Native RDS S3 export**: `AWSLogs/<AccountID>/RDS/<Region>/cluster-EXAMPLE1234567890ABCDEF/YYYY/MM/DD/...`
 - **Custom nested prefixes**: `custom/prefix/db-ABCDEFGHIJKLMNOPQRSTUVWXYZ/file.json`
 
 If an incoming S3 key does not contain a recognizable cluster or instance prefix, the processor falls back to the configured `DAS_RDS_RESOURCE_ID` environment variable.
+
+### Input Stream Ingestion Setup (Amazon Data Firehose)
+
+When you enable Database Activity Streams (DAS) on an Amazon Aurora DB cluster or Amazon RDS DB instance, AWS publishes encrypted, zlib-compressed records to a dedicated Amazon Kinesis data stream (`aws-rds-das-cluster-<cluster-id>` or `aws-rds-das-db-<instance-id>`).
+
+To deliver these records into your raw source S3 bucket, configure an **Amazon Data Firehose** delivery stream with `UNCOMPRESSED` format (since DAS records are already encrypted and compressed within the payload envelope):
+
+```bash
+aws firehose create-delivery-stream \
+  --delivery-stream-name das-stream-to-s3-cluster-EXAMPLE1234567890ABCDEF \
+  --region us-east-1 \
+  --delivery-stream-type KinesisStreamAsSource \
+  --kinesis-stream-source-configuration "KinesisStreamARN=arn:aws:kinesis:us-east-1:123456789012:stream/aws-rds-das-cluster-EXAMPLE1234567890ABCDEF,RoleARN=arn:aws:iam::123456789012:role/service-role/KinesisFirehoseServiceRole" \
+  --extended-s3-destination-configuration '{
+      "RoleARN": "arn:aws:iam::123456789012:role/service-role/KinesisFirehoseServiceRole",
+      "BucketARN": "arn:aws:s3:::aws-das-logs-raw-123456789012-us-east-1",
+      "Prefix": "AWSLogs/123456789012/DAS/us-east-1/cluster-EXAMPLE1234567890ABCDEF/",
+      "ErrorOutputPrefix": "AWSLogs/123456789012/DAS/us-east-1/cluster-EXAMPLE1234567890ABCDEF/errors/",
+      "CompressionFormat": "UNCOMPRESSED"
+  }'
+```
+
+> **Prefix Best Practice**: Setting `Prefix` to `AWSLogs/<AccountID>/DAS/<Region>/cluster-EXAMPLE1234567890ABCDEF/` allows `aws-das-processor` to dynamically discover the RDS Resource ID directly from S3 key directory segments, ensuring exact matching of the KMS encryption context (`aws:rds:dbc-id`).
+>
+> **Automatic Error Manifest Filtering**: If Firehose encounters delivery or processing issues, it writes error logs under `ErrorOutputPrefix` (`.../errors/...`). `aws-das-processor` automatically identifies and skips these error files, acknowledging the SQS message without triggering unmarshal errors or dead-letter queue (DLQ) retries.
+
+### Cross-Region KMS Decryption
+
+`aws-das-processor` dynamically routes `kms:Decrypt` API calls to the target regional endpoint using a hierarchical fallback:
+
+1. **Filter Configuration (`kms_region`)**: Explicitly configured per filter profile in `filters/<name>.yaml` (e.g. `kms_region: "eu-west-1"`).
+2. **Environment Variable Fallback (`DAS_KMS_REGION_NAME`)**: Global fallback region environment variable.
+3. **Ambient Default**: If neither is set, defaults to the Lambda's ambient execution region (`AWS_REGION`).
+
+This allows a centralized processor deployed in a single region (e.g., `us-east-1`) to seamlessly ingest and decrypt database activity streams from databases across multiple AWS regions without requiring multiple processor deployments or complex routing infrastructure. *(Note: If using AWS KMS Multi-Region Keys (MRK) with replicas in the processor's region, regional overrides are not required.)*
 
 ### Destination S3 Partitioning & Bucket Routing
 
@@ -210,6 +248,45 @@ The Lambda execution role requires the following least-privilege IAM policy perm
     }
   ]
 }
+```
+
+---
+
+## Deployment via CloudFormation
+
+`aws-das-processor` supports both **Amazon EventBridge to SQS** (modern standard default) and **Amazon SNS to SQS** (classic fanout). The Go runtime automatically detects and parses both envelope formats.
+
+### Option A: Modern Architecture via EventBridge (Recommended)
+
+Requires only enabling EventBridge notifications on your source S3 bucket (`EventBridgeEnabled: true`). Eliminates S3 prefix-overlap restrictions.
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/cloudformation/lambda.yaml \
+  --stack-name aws-das-processor \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    DasSourceBucketName=aws-das-logs-raw-123456789012-us-east-1 \
+    DasDestinationBucketName=analytics-das-parquet-bucket \
+    KmsKeyArn=arn:aws:kms:us-east-1:123456789012:key/your-das-key-id \
+    LambdaImageUri=123456789012.dkr.ecr.us-east-1.amazonaws.com/aws-das-processor:latest
+```
+
+### Option B: Classic Architecture via SNS Fanout
+
+For environments with an existing SNS topic receiving S3 notifications:
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/cloudformation/lambda-sns.yaml \
+  --stack-name aws-das-processor-sns \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    DasSnsTopicArn=arn:aws:sns:us-east-1:123456789012:das-sns-topic \
+    DasSourceBucketArn=arn:aws:s3:::aws-das-logs-raw-123456789012-us-east-1 \
+    DasDestinationBucketName=analytics-das-parquet-bucket \
+    KmsKeyArn=arn:aws:kms:us-east-1:123456789012:key/your-das-key-id \
+    LambdaImageUri=123456789012.dkr.ecr.us-east-1.amazonaws.com/aws-das-processor:latest
 ```
 
 ---

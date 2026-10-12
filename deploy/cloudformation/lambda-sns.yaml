@@ -1,0 +1,178 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Database Activity Stream (DAS) Processor - S3 to SNS to SQS Fanout'
+
+Parameters:
+  DasSnsTopicArn:
+    Type: String
+    Description: 'ARN of the existing SNS Topic that receives S3 Event Notifications from the DAS bucket.'
+  
+  DasSourceBucketArn:
+    Type: String
+    Description: 'ARN of the source S3 Bucket containing the encrypted DAS logs.'
+
+  DasDestinationBucketName:
+    Type: String
+    Description: 'Name of the existing destination S3 Bucket for processed Parquet files (DAS_OUTPUT_BUCKET).'
+
+  KmsKeyArn:
+    Type: String
+    Description: 'ARN of the KMS Key used to encrypt the DAS logs.'
+
+  RdsResourceId:
+    Type: String
+    Default: ''
+    Description: 'Optional fallback RDS Resource ID for the encryption context (DAS_RDS_RESOURCE_ID). Dynamically extracted from S3 key if present.'
+
+  LambdaImageUri:
+    Type: String
+    Description: 'ECR Image URI for the aws-das-processor Lambda function.'
+
+  LambdaMemorySize:
+    Type: Number
+    Default: 512
+    AllowedValues: [256, 512, 1024, 1536, 2048, 3072]
+    Description: 'Memory size in MB allocated to the Lambda function.'
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
+    Description: 'Number of days to retain CloudWatch Logs for the Lambda function.'
+
+  SqsMaxReceiveCount:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 1000
+    Description: 'The number of times a message is delivered to the processor queue before being moved to the dead-letter queue.'
+
+Resources:
+  # 1. Dead-Letter Queue for Fanout
+  ProcessorDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600 # 14 days
+      KmsMasterKeyId: alias/aws/sqs # SSE encryption for DLQ
+
+  # 2. SQS Queue for Fanout
+  ProcessorQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 1209600 # 14 days
+      KmsMasterKeyId: alias/aws/sqs # SSE encryption for queue
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ProcessorDeadLetterQueue.Arn
+        maxReceiveCount: !Ref SqsMaxReceiveCount
+
+  # 3. SQS Queue Policy allowing SNS to publish
+  ProcessorQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref ProcessorQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt ProcessorQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref DasSnsTopicArn
+
+  # 4. Subscribe SQS to SNS Fanout Topic
+  SnsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: sqs
+      Endpoint: !GetAtt ProcessorQueue.Arn
+      TopicArn: !Ref DasSnsTopicArn
+      RawMessageDelivery: false
+
+  # 5. Lambda Execution IAM Role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DasProcessorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub '${DasSourceBucketArn}/*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub 'arn:aws:s3:::${DasDestinationBucketName}/*'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !Ref KmsKeyArn
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt ProcessorQueue.Arn
+
+  # 6. AWS Lambda Function
+  ProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      PackageType: Image
+      Code:
+        ImageUri: !Ref LambdaImageUri
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 120
+      MemorySize: !Ref LambdaMemorySize
+      Environment:
+        Variables:
+          DAS_KMS_REGION_NAME: !Ref AWS::Region
+          DAS_RDS_RESOURCE_ID: !Ref RdsResourceId
+          DAS_OUTPUT_BUCKET: !Ref DasDestinationBucketName
+
+  # 7. CloudWatch Log Group with retention policy
+  ProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProcessorFunction}'
+      RetentionInDays: !Ref LogRetentionDays
+
+  # 8. SQS Event Source Mapping to Lambda
+  EventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt ProcessorQueue.Arn
+      FunctionName: !Ref ProcessorFunction
+      BatchSize: 10
+      Enabled: true
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+
+Outputs:
+  DestinationBucketName:
+    Description: 'S3 Data Lake Bucket for Parquet files'
+    Value: !Ref DasDestinationBucketName
+  ProcessorFunctionName:
+    Description: 'Lambda Function Name'
+    Value: !Ref ProcessorFunction
+  ProcessorDLQArn:
+    Description: 'ARN of the Dead Letter Queue for failed DAS records'
+    Value: !GetAtt ProcessorDeadLetterQueue.Arn
+  ProcessorDLQUrl:
+    Description: 'URL of the Dead Letter Queue'
+    Value: !Ref ProcessorDeadLetterQueue

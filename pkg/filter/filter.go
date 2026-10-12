@@ -110,12 +110,13 @@ func MatchPattern(pattern, target string) bool {
 // FilterConfig holds the configuration for dropping fields, filtering events, destination output formatting,
 // and matching incoming events.
 type FilterConfig struct {
-	Name    string                 `json:"name,omitempty" yaml:"name,omitempty"`
-	Enabled *bool                  `json:"enabled,omitempty" yaml:"enabled,omitempty"` // Defaults to true if nil
-	Match   *MatchConfig           `json:"match,omitempty" yaml:"match,omitempty"`
-	Drop    []string               `json:"drop" yaml:"drop"`
-	Query   map[string]interface{} `json:"query" yaml:"query"`
-	Output  *OutputConfig          `json:"output,omitempty" yaml:"output,omitempty"`
+	Name      string                 `json:"name,omitempty" yaml:"name,omitempty"`
+	Enabled   *bool                  `json:"enabled,omitempty" yaml:"enabled,omitempty"`       // Defaults to true if nil
+	KMSRegion string                 `json:"kms_region,omitempty" yaml:"kms_region,omitempty"` // AWS region for source KMS key
+	Match     *MatchConfig           `json:"match,omitempty" yaml:"match,omitempty"`
+	Drop      []string               `json:"drop" yaml:"drop"`
+	Query     map[string]interface{} `json:"query" yaml:"query"`
+	Output    *OutputConfig          `json:"output,omitempty" yaml:"output,omitempty"`
 }
 
 // IsEnabled returns true if the filter is enabled (default is true if unset).

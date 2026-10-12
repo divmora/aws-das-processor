@@ -14,6 +14,20 @@ type S3EventNotification struct {
 	} `json:"Records"`
 }
 
+// S3EventBridgeNotification represents an S3 object created event delivered via Amazon EventBridge
+type S3EventBridgeNotification struct {
+	Source     string `json:"source"`
+	DetailType string `json:"detail-type"`
+	Detail     struct {
+		Bucket struct {
+			Name string `json:"name"`
+		} `json:"bucket"`
+		Object struct {
+			Key string `json:"key"`
+		} `json:"object"`
+	} `json:"detail"`
+}
+
 // DASPayload represents the schema inside the Firehose / S3 object for DAS
 type DASPayload struct {
 	Type                   string `json:"type"`

@@ -97,29 +97,93 @@ func (p *Processor) ProcessSQSEvent(ctx context.Context, sqsEvent events.SQSEven
 	return response, nil
 }
 
-// ProcessMessage handles the complete pipeline for a single SQS message, applying all matched filters
-// to the decrypted and decompressed payload in memory.
-func (p *Processor) ProcessMessage(ctx context.Context, message events.SQSMessage, rdsResourceID string, customFilters ...*filter.FilterConfig) error {
-	var s3Event model.S3EventNotification
+// S3RecordRef contains the target S3 bucket and object key extracted from an event notification envelope.
+type S3RecordRef struct {
+	Bucket string
+	Key    string
+}
 
-	// Check if it's an SNS wrapped message
+// ParseS3Records extracts S3 bucket and object key references from multiple event notification envelopes:
+// 1. Amazon EventBridge S3 notification (modern default): {"source":"aws.s3","detail":{"bucket":{"name":"..."},"object":{"key":"..."}}}
+// 2. Amazon SNS wrapped S3 notification: {"Type":"Notification","Message":"..."}
+// 3. Direct Amazon S3 bucket notification: {"Records":[{"s3":{"bucket":{"name":"..."},"object":{"key":"..."}}}]}
+func ParseS3Records(body string) ([]S3RecordRef, error) {
+	// 1. Check for Amazon EventBridge notification (modern standard)
+	var ebEvent model.S3EventBridgeNotification
+	if err := json.Unmarshal([]byte(body), &ebEvent); err == nil && ebEvent.Source == "aws.s3" && ebEvent.Detail.Bucket.Name != "" && ebEvent.Detail.Object.Key != "" {
+		return []S3RecordRef{{
+			Bucket: ebEvent.Detail.Bucket.Name,
+			Key:    ebEvent.Detail.Object.Key,
+		}}, nil
+	}
+
+	// 2. Check for Amazon SNS wrapped notification
 	var snsMsg struct {
 		Type    string `json:"Type"`
 		Message string `json:"Message"`
 	}
-	if err := json.Unmarshal([]byte(message.Body), &snsMsg); err == nil && snsMsg.Type == "Notification" && snsMsg.Message != "" {
-		if err := json.Unmarshal([]byte(snsMsg.Message), &s3Event); err != nil {
-			return fmt.Errorf("failed to parse S3 event from SNS message: %w", err)
+	if err := json.Unmarshal([]byte(body), &snsMsg); err == nil && snsMsg.Type == "Notification" && snsMsg.Message != "" {
+		// Inside SNS Message could be standard S3 event or EventBridge S3 event
+		var innerS3 model.S3EventNotification
+		if err := json.Unmarshal([]byte(snsMsg.Message), &innerS3); err == nil && len(innerS3.Records) > 0 {
+			var targets []S3RecordRef
+			for _, r := range innerS3.Records {
+				if r.S3.Bucket.Name != "" && r.S3.Object.Key != "" {
+					targets = append(targets, S3RecordRef{Bucket: r.S3.Bucket.Name, Key: r.S3.Object.Key})
+				}
+			}
+			if len(targets) > 0 {
+				return targets, nil
+			}
 		}
-	} else {
-		if err := json.Unmarshal([]byte(message.Body), &s3Event); err != nil {
-			return fmt.Errorf("failed to parse S3 event: %w", err)
+
+		var innerEB model.S3EventBridgeNotification
+		if err := json.Unmarshal([]byte(snsMsg.Message), &innerEB); err == nil && innerEB.Detail.Bucket.Name != "" && innerEB.Detail.Object.Key != "" {
+			return []S3RecordRef{{
+				Bucket: innerEB.Detail.Bucket.Name,
+				Key:    innerEB.Detail.Object.Key,
+			}}, nil
+		}
+
+		return nil, fmt.Errorf("failed to parse S3 event from SNS message payload")
+	}
+
+	// 3. Check for direct S3 bucket notification
+	var s3Event model.S3EventNotification
+	if err := json.Unmarshal([]byte(body), &s3Event); err == nil && len(s3Event.Records) > 0 {
+		var targets []S3RecordRef
+		for _, r := range s3Event.Records {
+			if r.S3.Bucket.Name != "" && r.S3.Object.Key != "" {
+				targets = append(targets, S3RecordRef{Bucket: r.S3.Bucket.Name, Key: r.S3.Object.Key})
+			}
+		}
+		if len(targets) > 0 {
+			return targets, nil
 		}
 	}
 
-	for _, record := range s3Event.Records {
-		sourceBucket := record.S3.Bucket.Name
-		key := record.S3.Object.Key
+	return nil, fmt.Errorf("failed to parse S3 event: unrecognized message envelope format")
+}
+
+// ProcessMessage handles the complete pipeline for a single SQS message, applying all matched filters
+// to the decrypted and decompressed payload in memory.
+func (p *Processor) ProcessMessage(ctx context.Context, message events.SQSMessage, rdsResourceID string, customFilters ...*filter.FilterConfig) error {
+	records, err := ParseS3Records(message.Body)
+	if err != nil {
+		return err
+	}
+
+	for _, record := range records {
+		sourceBucket := record.Bucket
+		key := record.Key
+
+		if IsIgnoredS3Key(key) {
+			slog.Info("Skipping Firehose error or non-data S3 object",
+				"SourceBucket", sourceBucket,
+				"Key", key,
+			)
+			continue
+		}
 
 		clusterID := ExtractRDSResourceID(key, rdsResourceID)
 		if clusterID == "" {
@@ -170,11 +234,21 @@ func (p *Processor) ProcessMessage(ctx context.Context, message events.SQSMessag
 			return fmt.Errorf("failed to base64 decode KMS key: %w", err)
 		}
 
+		kmsRegion := ResolveKMSRegion(matchedFilters)
+		slog.Info("Decrypting KMS data key",
+			"ResourceID", clusterID,
+			"KMSRegion", kmsRegion,
+		)
+
 		decryptOutput, err := p.KMSClient.Decrypt(ctx, &kms.DecryptInput{
 			CiphertextBlob: decodedKmsKey,
 			EncryptionContext: map[string]string{
 				"aws:rds:dbc-id": clusterID,
 			},
+		}, func(o *kms.Options) {
+			if kmsRegion != "" {
+				o.Region = kmsRegion
+			}
 		})
 		if err != nil {
 			return fmt.Errorf("failed to decrypt KMS data key: %w", err)
@@ -302,6 +376,36 @@ func ExtractRDSResourceID(s3Key, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+// ResolveKMSRegion resolves the AWS region to use for KMS envelope decryption:
+// 1. Filter-level kms_region configured on any matched filter
+// 2. Fallback environment variable DAS_KMS_REGION_NAME
+// If none of these specify a region, it returns an empty string (allowing AWS SDK v2 to use the ambient default).
+func ResolveKMSRegion(matchedFilters []*filter.FilterConfig) string {
+	for _, f := range matchedFilters {
+		if f != nil && f.KMSRegion != "" {
+			return f.KMSRegion
+		}
+	}
+	if envRegion := os.Getenv("DAS_KMS_REGION_NAME"); envRegion != "" {
+		return envRegion
+	}
+	return ""
+}
+
+// IsIgnoredS3Key returns true if the S3 key should be skipped by the processor.
+// This safely ignores non-data delivery objects such as Amazon Data Firehose error delivery
+// manifests (e.g. keys containing an "errors" or "error" directory segment).
+func IsIgnoredS3Key(s3Key string) bool {
+	cleanKey := strings.TrimPrefix(s3Key, "/")
+	parts := strings.Split(cleanKey, "/")
+	for i := 0; i < len(parts)-1; i++ {
+		if parts[i] == "errors" || parts[i] == "error" {
+			return true
+		}
+	}
+	return false
 }
 
 var dateRegex = regexp.MustCompile(`/(20\d\d)/([01]\d)/([0-3]\d)(?:/([0-2]\d))?`)

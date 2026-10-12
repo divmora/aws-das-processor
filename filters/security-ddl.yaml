@@ -1,5 +1,6 @@
 name: security-ddl
 enabled: true
+# kms_region: eu-west-1              # Optional: source KMS CMK region for cross-region decryption
 match:
   clusters:
     - "cluster-*"

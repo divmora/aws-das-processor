@@ -78,6 +78,12 @@ func TestExtractRDSResourceID(t *testing.T) {
 			want:     "cluster-ABCD",
 		},
 		{
+			name:     "Firehose destination with AWSLogs DAS prefix",
+			s3Key:    "AWSLogs/123456789012/DAS/us-east-1/cluster-EXAMPLE1234567890ABCDEF/2026/10/01/05/das-file.json",
+			fallback: "cluster-fallback",
+			want:     "cluster-EXAMPLE1234567890ABCDEF",
+		},
+		{
 			name:     "Standalone RDS instance prefix",
 			s3Key:    "custom-prefix/logs/db-ABCDEFGHIJKLMNOPQRSTUVWXYZ/2026/10/01/data.gz",
 			fallback: "cluster-fallback",
@@ -132,6 +138,215 @@ func TestExtractRDSResourceID(t *testing.T) {
 			got := ExtractRDSResourceID(tt.s3Key, tt.fallback)
 			if got != tt.want {
 				t.Errorf("ExtractRDSResourceID(%q, %q) = %q, want %q", tt.s3Key, tt.fallback, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveKMSRegion(t *testing.T) {
+	tests := []struct {
+		name           string
+		matchedFilters []*filter.FilterConfig
+		envVal         string
+		want           string
+	}{
+		{
+			name: "Filter kms_region takes precedence over env var",
+			matchedFilters: []*filter.FilterConfig{
+				{Name: "filter1", KMSRegion: "eu-west-1"},
+			},
+			envVal: "ap-southeast-1",
+			want:   "eu-west-1",
+		},
+		{
+			name: "Env variable used when filter kms_region is empty",
+			matchedFilters: []*filter.FilterConfig{
+				{Name: "filter1", KMSRegion: ""},
+			},
+			envVal: "us-west-2",
+			want:   "us-west-2",
+		},
+		{
+			name:           "Empty string returned when no filter and no env var",
+			matchedFilters: []*filter.FilterConfig{},
+			envVal:         "",
+			want:           "",
+		},
+		{
+			name: "Multiple filters where first filter has no region and second has region",
+			matchedFilters: []*filter.FilterConfig{
+				{Name: "filter1", KMSRegion: ""},
+				{Name: "filter2", KMSRegion: "ca-central-1"},
+			},
+			envVal: "us-east-1",
+			want:   "ca-central-1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.envVal != "" {
+				t.Setenv("DAS_KMS_REGION_NAME", tt.envVal)
+			} else {
+				t.Setenv("DAS_KMS_REGION_NAME", "")
+			}
+			got := ResolveKMSRegion(tt.matchedFilters)
+			if got != tt.want {
+				t.Errorf("ResolveKMSRegion(filters) = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsIgnoredS3Key(t *testing.T) {
+	tests := []struct {
+		name  string
+		s3Key string
+		want  bool
+	}{
+		{
+			name:  "Firehose standard AWSLogs DAS error output prefix",
+			s3Key: "AWSLogs/102147727378/DAS/ap-south-1/cluster-JAWX76GRVX64PXJZ5T56KUYHYQ/errors/2026/10/10/ProcessingFailed-123.json",
+			want:  true,
+		},
+		{
+			name:  "Firehose generic error prefix",
+			s3Key: "firehose/cluster-EXAMPLE1234567890ABCDEF/errors/2026/10/01/05/err-manifest.json",
+			want:  true,
+		},
+		{
+			name:  "Root-level errors directory",
+			s3Key: "errors/2026/10/01/file.json",
+			want:  true,
+		},
+		{
+			name:  "Custom prefix with error folder",
+			s3Key: "my-prefix/error/2026/10/01/manifest.json",
+			want:  true,
+		},
+		{
+			name:  "Valid standard data key with AWSLogs DAS prefix",
+			s3Key: "AWSLogs/102147727378/DAS/ap-south-1/cluster-JAWX76GRVX64PXJZ5T56KUYHYQ/2026/10/10/das-file.json",
+			want:  false,
+		},
+		{
+			name:  "Valid firehose data key",
+			s3Key: "firehose/cluster-EXAMPLE1234567890ABCDEF/2026/10/01/05/das-events.json",
+			want:  false,
+		},
+		{
+			name:  "Cluster name containing errors substring is not ignored",
+			s3Key: "firehose/cluster-errors-prod/2026/10/01/05/das-events.json",
+			want:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsIgnoredS3Key(tt.s3Key)
+			if got != tt.want {
+				t.Errorf("IsIgnoredS3Key(%q) = %v, want %v", tt.s3Key, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseS3Records(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		want    []S3RecordRef
+		wantErr bool
+	}{
+		{
+			name: "EventBridge S3 notification (modern standard)",
+			body: `{
+				"version": "0",
+				"id": "17793124-05d5-b190-f004-9f1244104aa4",
+				"detail-type": "Object Created",
+				"source": "aws.s3",
+				"account": "123456789012",
+				"time": "2026-10-12T00:37:34Z",
+				"region": "us-east-1",
+				"resources": ["arn:aws:s3:::raw-das-bucket"],
+				"detail": {
+					"version": "0",
+					"bucket": {"name": "raw-das-bucket"},
+					"object": {"key": "AWSLogs/123456789012/DAS/us-east-1/cluster-ABCD/2026/10/12/file.json"}
+				}
+			}`,
+			want: []S3RecordRef{{
+				Bucket: "raw-das-bucket",
+				Key:    "AWSLogs/123456789012/DAS/us-east-1/cluster-ABCD/2026/10/12/file.json",
+			}},
+			wantErr: false,
+		},
+		{
+			name: "SNS wrapped S3 notification",
+			body: `{
+				"Type": "Notification",
+				"MessageId": "msg-123",
+				"TopicArn": "arn:aws:sns:us-east-1:123456789012:das-topic",
+				"Message": "{\"Records\":[{\"s3\":{\"bucket\":{\"name\":\"raw-source-bucket\"},\"object\":{\"key\":\"firehose/cluster-ABCD/data.json\"}}}]}"
+			}`,
+			want: []S3RecordRef{{
+				Bucket: "raw-source-bucket",
+				Key:    "firehose/cluster-ABCD/data.json",
+			}},
+			wantErr: false,
+		},
+		{
+			name: "SNS wrapped EventBridge S3 notification",
+			body: `{
+				"Type": "Notification",
+				"MessageId": "msg-123",
+				"TopicArn": "arn:aws:sns:us-east-1:123456789012:das-topic",
+				"Message": "{\"source\":\"aws.s3\",\"detail-type\":\"Object Created\",\"detail\":{\"bucket\":{\"name\":\"eb-sns-bucket\"},\"object\":{\"key\":\"data.json\"}}}"
+			}`,
+			want: []S3RecordRef{{
+				Bucket: "eb-sns-bucket",
+				Key:    "data.json",
+			}},
+			wantErr: false,
+		},
+		{
+			name: "Direct S3 notification",
+			body: `{"Records":[{"s3":{"bucket":{"name":"direct-s3-bucket"},"object":{"key":"direct/file.json"}}}]}`,
+			want: []S3RecordRef{{
+				Bucket: "direct-s3-bucket",
+				Key:    "direct/file.json",
+			}},
+			wantErr: false,
+		},
+		{
+			name:    "Unrecognized / invalid payload format",
+			body:    `{"unrelated":"json"}`,
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name:    "Malformed JSON string",
+			body:    `{not valid json`,
+			want:    nil,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseS3Records(tt.body)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseS3Records() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr {
+				if len(got) != len(tt.want) {
+					t.Fatalf("ParseS3Records() len = %d, want %d", len(got), len(tt.want))
+				}
+				for i := range got {
+					if got[i].Bucket != tt.want[i].Bucket || got[i].Key != tt.want[i].Key {
+						t.Errorf("ParseS3Records()[%d] = %+v, want %+v", i, got[i], tt.want[i])
+					}
+				}
 			}
 		})
 	}
@@ -750,5 +965,270 @@ func TestProcessor_EndToEnd_PerFilterDestinationBucketAndKMSKey(t *testing.T) {
 	}
 	if putRecords[1].kmsKeyID != "arn:aws:kms:us-east-1:123456789012:key/secops-cmk" {
 		t.Errorf("expected kmsKeyID[1]=arn:aws:kms:us-east-1:123456789012:key/secops-cmk, got %q", putRecords[1].kmsKeyID)
+	}
+}
+
+func TestProcessor_EndToEnd_CrossRegionKMS(t *testing.T) {
+	ctx := context.Background()
+
+	key := []byte("01234567890123456789012345678901")
+	sampleEvents := `{"type":"DatabaseActivityMonitoringRecords","version":"1.0","databaseActivityEventList":[{"command":"SELECT 1"}]}`
+	var b bytes.Buffer
+	zw := zlib.NewWriter(&b)
+	zw.Write([]byte(sampleEvents))
+	zw.Close()
+
+	matProv, _ := mpl.NewClient(mpltypes.MaterialProvidersConfig{})
+	aesKeyring, _ := matProv.CreateRawAesKeyring(ctx, mpltypes.CreateRawAesKeyringInput{
+		KeyName:      "DataKey",
+		KeyNamespace: "RawMasterKeyProvider",
+		WrappingKey:  key,
+		WrappingAlg:  mpltypes.AesWrappingAlgAlgAes256GcmIv12Tag16,
+	})
+	encClient, _ := client.NewClient(esdktypes.AwsEncryptionSdkConfig{})
+	encRes, _ := encClient.Encrypt(ctx, esdktypes.EncryptInput{
+		Plaintext: b.Bytes(),
+		Keyring:   aesKeyring,
+	})
+
+	dasPayload := model.DASPayload{
+		Type:                   "DatabaseActivityMonitoringRecords",
+		Version:                "1.0",
+		Key:                    base64.StdEncoding.EncodeToString([]byte("mock-kms-key")),
+		DatabaseActivityEvents: base64.StdEncoding.EncodeToString(encRes.Ciphertext),
+	}
+	dasPayloadBytes, _ := json.Marshal(dasPayload)
+
+	cases := []struct {
+		name           string
+		s3Key          string
+		filterRegion   string
+		envRegion      string
+		expectedRegion string
+	}{
+		{
+			name:           "Per-filter kms_region takes priority over environment variable",
+			s3Key:          "firehose/cluster-EXAMPLE1234567890ABCDEF/2026/10/01/05/das-events.json",
+			filterRegion:   "eu-west-1",
+			envRegion:      "ap-northeast-1",
+			expectedRegion: "eu-west-1",
+		},
+		{
+			name:           "Environment DAS_KMS_REGION_NAME fallback when filter has no kms_region",
+			s3Key:          "firehose/cluster-EXAMPLE1234567890ABCDEF/2026/10/01/05/das-events.json",
+			filterRegion:   "",
+			envRegion:      "ca-central-1",
+			expectedRegion: "ca-central-1",
+		},
+		{
+			name:           "Ambient default empty when no filter kms_region and no env var",
+			s3Key:          "firehose/cluster-EXAMPLE1234567890ABCDEF/2026/10/01/05/das-events.json",
+			filterRegion:   "",
+			envRegion:      "",
+			expectedRegion: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("DAS_KMS_REGION_NAME", tc.envRegion)
+
+			var capturedRegion string
+			mockS3 := &mockS3Client{
+				getObjectFunc: func(ctx context.Context, in *s3.GetObjectInput, opt ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+					return &s3.GetObjectOutput{
+						Body: io.NopCloser(bytes.NewReader(dasPayloadBytes)),
+					}, nil
+				},
+				putObjectFunc: func(ctx context.Context, in *s3.PutObjectInput, opt ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+					return &s3.PutObjectOutput{}, nil
+				},
+			}
+			mockKMS := &mockKMSClient{
+				decryptFunc: func(ctx context.Context, in *kms.DecryptInput, opt ...func(*kms.Options)) (*kms.DecryptOutput, error) {
+					var opts kms.Options
+					for _, fn := range opt {
+						fn(&opts)
+					}
+					capturedRegion = opts.Region
+					return &kms.DecryptOutput{Plaintext: key}, nil
+				},
+			}
+
+			p := New(mockS3, mockKMS)
+			filterCfg := &filter.FilterConfig{
+				Name:      "test-filter",
+				KMSRegion: tc.filterRegion,
+				Match: &filter.MatchConfig{
+					Clusters: []string{"*"},
+				},
+			}
+			p.SetFilterConfigs([]*filter.FilterConfig{filterCfg})
+
+			s3NotifJSON := fmt.Sprintf(`{"Records":[{"s3":{"bucket":{"name":%q},"object":{"key":%q}}}]}`, "raw-source-bucket", tc.s3Key)
+			msg := events.SQSMessage{
+				MessageId: "msg-kms-region-test",
+				Body:      s3NotifJSON,
+			}
+
+			err := p.ProcessMessage(ctx, msg, "")
+			if err != nil {
+				t.Fatalf("unexpected ProcessMessage error: %v", err)
+			}
+
+			if capturedRegion != tc.expectedRegion {
+				t.Errorf("expected KMS Decrypt region %q, got %q", tc.expectedRegion, capturedRegion)
+			}
+		})
+	}
+}
+
+func TestProcessor_EndToEnd_IgnoredErrorPrefix(t *testing.T) {
+	ctx := context.Background()
+
+	getObjectCalls := 0
+	kmsDecryptCalls := 0
+
+	mockS3 := &mockS3Client{
+		getObjectFunc: func(ctx context.Context, in *s3.GetObjectInput, opt ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+			getObjectCalls++
+			return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader([]byte("{}")))}, nil
+		},
+		putObjectFunc: func(ctx context.Context, in *s3.PutObjectInput, opt ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+			return &s3.PutObjectOutput{}, nil
+		},
+	}
+	mockKMS := &mockKMSClient{
+		decryptFunc: func(ctx context.Context, in *kms.DecryptInput, opt ...func(*kms.Options)) (*kms.DecryptOutput, error) {
+			kmsDecryptCalls++
+			return &kms.DecryptOutput{Plaintext: []byte("01234567890123456789012345678901")}, nil
+		},
+	}
+
+	p := New(mockS3, mockKMS)
+	p.SetFilterConfigs([]*filter.FilterConfig{{
+		Name: "all",
+		Match: &filter.MatchConfig{
+			Clusters: []string{"*"},
+		},
+	}})
+
+	errorKey := "AWSLogs/123456789012/DAS/us-east-1/cluster-EXAMPLE1234567890ABCDEF/errors/2026/10/10/ProcessingFailed-123.json"
+	s3NotifJSON := fmt.Sprintf(`{"Records":[{"s3":{"bucket":{"name":%q},"object":{"key":%q}}}]}`, "raw-source-bucket", errorKey)
+	msg := events.SQSMessage{
+		MessageId: "msg-firehose-error",
+		Body:      s3NotifJSON,
+	}
+
+	err := p.ProcessMessage(ctx, msg, "")
+	if err != nil {
+		t.Fatalf("expected nil error for ignored error prefix, got: %v", err)
+	}
+
+	if getObjectCalls != 0 {
+		t.Errorf("expected 0 GetObject calls for ignored error key, got %d", getObjectCalls)
+	}
+	if kmsDecryptCalls != 0 {
+		t.Errorf("expected 0 KMS Decrypt calls for ignored error key, got %d", kmsDecryptCalls)
+	}
+}
+
+func TestProcessor_EndToEnd_EventBridgeS3Notification(t *testing.T) {
+	ctx := context.Background()
+
+	key := []byte("01234567890123456789012345678901")
+	sampleEvents := `{"type":"DatabaseActivityMonitoringRecords","version":"1.0","databaseActivityEventList":[{"command":"SELECT 1"}]}`
+	var b bytes.Buffer
+	zw := zlib.NewWriter(&b)
+	zw.Write([]byte(sampleEvents))
+	zw.Close()
+
+	matProv, _ := mpl.NewClient(mpltypes.MaterialProvidersConfig{})
+	aesKeyring, _ := matProv.CreateRawAesKeyring(ctx, mpltypes.CreateRawAesKeyringInput{
+		KeyName:      "DataKey",
+		KeyNamespace: "RawMasterKeyProvider",
+		WrappingKey:  key,
+		WrappingAlg:  mpltypes.AesWrappingAlgAlgAes256GcmIv12Tag16,
+	})
+	encClient, _ := client.NewClient(esdktypes.AwsEncryptionSdkConfig{})
+	encRes, _ := encClient.Encrypt(ctx, esdktypes.EncryptInput{
+		Plaintext: b.Bytes(),
+		Keyring:   aesKeyring,
+	})
+
+	dasPayload := model.DASPayload{
+		Type:                   "DatabaseActivityMonitoringRecords",
+		Version:                "1.0",
+		Key:                    base64.StdEncoding.EncodeToString([]byte("mock-kms-key")),
+		DatabaseActivityEvents: base64.StdEncoding.EncodeToString(encRes.Ciphertext),
+	}
+	dasPayloadBytes, _ := json.Marshal(dasPayload)
+
+	var writtenBucket string
+	var writtenKey string
+
+	mockS3 := &mockS3Client{
+		getObjectFunc: func(ctx context.Context, in *s3.GetObjectInput, opt ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+			return &s3.GetObjectOutput{
+				Body: io.NopCloser(bytes.NewReader(dasPayloadBytes)),
+			}, nil
+		},
+		putObjectFunc: func(ctx context.Context, in *s3.PutObjectInput, opt ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+			writtenBucket = *in.Bucket
+			writtenKey = *in.Key
+			return &s3.PutObjectOutput{}, nil
+		},
+	}
+	mockKMS := &mockKMSClient{
+		decryptFunc: func(ctx context.Context, in *kms.DecryptInput, opt ...func(*kms.Options)) (*kms.DecryptOutput, error) {
+			return &kms.DecryptOutput{Plaintext: key}, nil
+		},
+	}
+
+	p := New(mockS3, mockKMS)
+	filterCfg := &filter.FilterConfig{
+		Name: "compliance",
+		Match: &filter.MatchConfig{
+			Clusters: []string{"*"},
+		},
+		Output: &filter.OutputConfig{
+			Bucket: "analytics-destination-bucket",
+			Format: "hive",
+			Prefix: strPtr("audit"),
+		},
+	}
+	p.SetFilterConfigs([]*filter.FilterConfig{filterCfg})
+
+	ebEventJSON := `{
+		"version": "0",
+		"id": "17793124-05d5-b190-f004-9f1244104aa4",
+		"detail-type": "Object Created",
+		"source": "aws.s3",
+		"account": "123456789012",
+		"time": "2026-10-12T00:37:34Z",
+		"region": "us-east-1",
+		"resources": ["arn:aws:s3:::raw-source-bucket"],
+		"detail": {
+			"version": "0",
+			"bucket": {"name": "raw-source-bucket"},
+			"object": {"key": "AWSLogs/123456789012/DAS/us-east-1/cluster-EXAMPLE1234567890ABCDEF/2026/10/12/das-file.json"}
+		}
+	}`
+
+	msg := events.SQSMessage{
+		MessageId: "msg-eventbridge-e2e",
+		Body:      ebEventJSON,
+	}
+
+	err := p.ProcessMessage(ctx, msg, "")
+	if err != nil {
+		t.Fatalf("unexpected error processing EventBridge S3 notification: %v", err)
+	}
+
+	if writtenBucket != "analytics-destination-bucket" {
+		t.Errorf("expected writtenBucket=analytics-destination-bucket, got %q", writtenBucket)
+	}
+	if !strings.HasPrefix(writtenKey, "audit/cluster=cluster-EXAMPLE1234567890ABCDEF/") {
+		t.Errorf("expected key to start with audit/cluster=..., got %q", writtenKey)
 	}
 }

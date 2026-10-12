@@ -174,9 +174,11 @@
         </div>
         <pre class="mermaid text-center">
 graph LR
-    RDS[(Amazon RDS / Aurora)] -->|Writes encrypted DAS chunk| S3Source[(Source S3 Bucket)]
-    S3Source -->|S3 Event Notification| SNS[SNS Topic]
-    SNS -->|Fanout Subscription| SQS[SQS Queue]
+    RDS[(Amazon RDS / Aurora)] -->|Streams activity records| Kinesis[Kinesis Data Stream]
+    Kinesis -->|Subscribes & delivers| Firehose[Amazon Data Firehose]
+    Firehose -->|Writes raw chunks| S3Source[(Source S3 Bucket)]
+    S3Source -->|EventBridge (Default)| SQS[SQS Queue]
+    S3Source -.->|Classic SNS Fanout| SQS
     SQS -->|Partial Batch Polling| Lambda[Go Lambda Processor]
     Lambda -->|KMS Decrypt Context| KMS[AWS KMS]
     Lambda -->|zlib Decompress| Decompress[Decompression]
@@ -215,7 +217,7 @@ graph LR
           </div>
           <h4 class="text-lg font-semibold text-white mb-2">AWS Encryption SDK & KMS</h4>
           <p class="text-gray-400 text-sm leading-relaxed">
-            Performs envelope decryption on raw DAS chunks using the official AWS Encryption SDK for Go (Dafny runtime) verified against the RDS Resource ID encryption context, automatically discovered from S3 object key paths with fallback support.
+            Performs envelope decryption on raw DAS chunks using the official AWS Encryption SDK for Go (Dafny runtime) verified against the RDS Resource ID encryption context, with dynamic cross-region KMS routing per filter profile and fallback to <code>DAS_KMS_REGION_NAME</code>.
           </p>
         </div>
 
@@ -312,7 +314,7 @@ graph LR
               <tr class="hover:bg-gray-800/30 transition-colors">
                 <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_KMS_REGION_NAME</td>
                 <td class="py-4 px-6 font-mono text-gray-400">Current Region</td>
-                <td class="py-4 px-6">AWS Region where the KMS Customer Managed Key (CMK) resides.</td>
+                <td class="py-4 px-6">Fallback AWS Region for KMS Customer Managed Key (CMK) decryption when not specified in the matching filter (<code>kms_region</code>).</td>
               </tr>
               <tr class="hover:bg-gray-800/30 transition-colors">
                 <td class="py-4 px-6 font-mono text-orange-400 font-semibold">DAS_OUTPUT_BUCKET</td>
@@ -403,6 +405,7 @@ graph LR
           </div>
           <pre class="p-5 text-sm font-mono text-gray-300 overflow-x-auto leading-relaxed"><code>name: compliance
 enabled: true # Set to false to disable without deleting file
+# kms_region: eu-west-1 # Optional: source KMS CMK region for cross-region decryption
 
 # Dynamic routing & matching criteria
 match:
@@ -451,6 +454,33 @@ output:
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <!-- Amazon Data Firehose Ingestion -->
+        <div class="glass rounded-2xl p-6 border border-gray-800 shadow-xl md:col-span-2">
+          <h4 class="text-lg font-bold text-white mb-2 flex items-center gap-2">
+            <i class="fa-solid fa-fire text-amber-400"></i>
+            <span>Input Ingestion: Amazon Data Firehose</span>
+          </h4>
+          <p class="text-gray-400 text-sm mb-4">
+            Connect the Amazon Aurora / RDS Kinesis stream to the raw source S3 bucket with <code>UNCOMPRESSED</code> format and structured cluster prefix:
+          </p>
+          <pre class="bg-gray-950/80 p-4 rounded-xl text-xs font-mono text-amber-300 border border-gray-800 overflow-x-auto"><code>aws firehose create-delivery-stream \
+  --delivery-stream-name das-stream-to-s3-cluster-EXAMPLE1234567890ABCDEF \
+  --region us-east-1 \
+  --delivery-stream-type KinesisStreamAsSource \
+  --kinesis-stream-source-configuration "KinesisStreamARN=arn:aws:kinesis:us-east-1:123456789012:stream/aws-rds-das-cluster-EXAMPLE1234567890ABCDEF,RoleARN=arn:aws:iam::123456789012:role/service-role/KinesisFirehoseServiceRole" \
+  --extended-s3-destination-configuration '{
+      "RoleARN": "arn:aws:iam::123456789012:role/service-role/KinesisFirehoseServiceRole",
+      "BucketARN": "arn:aws:s3:::aws-das-logs-raw-123456789012-us-east-1",
+      "Prefix": "AWSLogs/123456789012/DAS/us-east-1/cluster-EXAMPLE1234567890ABCDEF/",
+      "ErrorOutputPrefix": "AWSLogs/123456789012/DAS/us-east-1/cluster-EXAMPLE1234567890ABCDEF/errors/",
+      "CompressionFormat": "UNCOMPRESSED"
+  }'</code></pre>
+          <p class="text-xs text-gray-500 mt-3">
+            <span class="text-amber-400 font-semibold"><i class="fa-solid fa-circle-info mr-1"></i>Automatic Error Manifest Filtering:</span>
+            Objects delivered under <code>ErrorOutputPrefix</code> (e.g. <code>.../errors/...</code>) are automatically recognized and skipped by <code>aws-das-processor</code>, acknowledging the SQS message without unmarshal errors or dead-letter queue (DLQ) retries.
+          </p>
+        </div>
+
         <!-- CloudFormation -->
         <div class="glass rounded-2xl p-6 border border-gray-800 shadow-xl">
           <h4 class="text-lg font-bold text-white mb-2 flex items-center gap-2">
@@ -458,19 +488,41 @@ output:
             <span>Deploy via CloudFormation</span>
           </h4>
           <p class="text-gray-400 text-sm mb-4">
-            The template in <code>deploy/cloudformation/lambda.yaml</code> provisions the SQS queue, dead-letter queue (DLQ), execution roles, and Lambda event mapping:
+            Deploy with modern <strong>Amazon EventBridge</strong> (default, eliminates S3 prefix conflicts) or classic <strong>Amazon SNS</strong> fanout:
           </p>
-          <pre class="bg-gray-950/80 p-4 rounded-xl text-xs font-mono text-orange-300 border border-gray-800 overflow-x-auto"><code>aws cloudformation deploy \
+
+          <div class="space-y-4">
+            <div>
+              <span class="text-xs font-semibold uppercase tracking-wider text-orange-400 flex items-center gap-1.5 mb-2">
+                <i class="fa-solid fa-bolt"></i> Option A: Modern EventBridge (Default)
+              </span>
+              <pre class="bg-gray-950/80 p-4 rounded-xl text-xs font-mono text-orange-300 border border-gray-800 overflow-x-auto"><code>aws cloudformation deploy \
   --template-file deploy/cloudformation/lambda.yaml \
   --stack-name aws-das-processor \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
-    DasSnsTopicArn=arn:aws:sns:region:acct:das-topic \
-    DasSourceBucketArn=arn:aws:s3:::source-das-bucket \
-    DasDestinationBucketName=analytics-das-parquet \
-    KmsKeyArn=arn:aws:kms:region:acct:key/das-key \
-    RdsResourceId=cluster-ABCD1234EFGH \
-    LambdaImageUri=123456789012.dkr.ecr.region.amazonaws.com/aws-das-processor:latest</code></pre>
+    DasSourceBucketName=aws-das-logs-raw-123456789012-us-east-1 \
+    DasDestinationBucketName=analytics-das-parquet-bucket \
+    KmsKeyArn=arn:aws:kms:us-east-1:123456789012:key/your-das-key-id \
+    LambdaImageUri=123456789012.dkr.ecr.us-east-1.amazonaws.com/aws-das-processor:latest</code></pre>
+            </div>
+
+            <div>
+              <span class="text-xs font-semibold uppercase tracking-wider text-gray-400 flex items-center gap-1.5 mb-2">
+                <i class="fa-solid fa-satellite-dish"></i> Option B: Classic SNS Fanout
+              </span>
+              <pre class="bg-gray-950/80 p-4 rounded-xl text-xs font-mono text-gray-300 border border-gray-800 overflow-x-auto"><code>aws cloudformation deploy \
+  --template-file deploy/cloudformation/lambda-sns.yaml \
+  --stack-name aws-das-processor-sns \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    DasSnsTopicArn=arn:aws:sns:us-east-1:123456789012:das-sns-topic \
+    DasSourceBucketArn=arn:aws:s3:::aws-das-logs-raw-123456789012-us-east-1 \
+    DasDestinationBucketName=analytics-das-parquet-bucket \
+    KmsKeyArn=arn:aws:kms:us-east-1:123456789012:key/your-das-key-id \
+    LambdaImageUri=123456789012.dkr.ecr.us-east-1.amazonaws.com/aws-das-processor:latest</code></pre>
+            </div>
+          </div>
         </div>
 
         <!-- Local Make & Container Builds -->

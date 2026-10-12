@@ -1,14 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'AWS Database Activity Stream (DAS) Processor - SQS to Lambda Fanout'
+Description: 'AWS Database Activity Stream (DAS) Processor - EventBridge to SQS (Modern Architecture)'
 
 Parameters:
-  DasSnsTopicArn:
+  DasSourceBucketName:
     Type: String
-    Description: 'ARN of the existing SNS Topic that receives S3 Event Notifications from the DAS bucket.'
-  
-  DasSourceBucketArn:
-    Type: String
-    Description: 'ARN of the source S3 Bucket containing the encrypted DAS logs.'
+    Description: 'Name of the existing source S3 Bucket containing the raw DAS logs (requires S3 EventBridge enabled).'
 
   DasDestinationBucketName:
     Type: String
@@ -47,14 +43,14 @@ Parameters:
     Description: 'The number of times a message is delivered to the processor queue before being moved to the dead-letter queue.'
 
 Resources:
-  # 1. Dead-Letter Queue for Fanout
+  # 1. Dead-Letter Queue for SQS retries
   ProcessorDeadLetterQueue:
     Type: AWS::SQS::Queue
     Properties:
       MessageRetentionPeriod: 1209600 # 14 days
       KmsMasterKeyId: alias/aws/sqs # SSE encryption for DLQ
 
-  # 2. SQS Queue for Fanout
+  # 2. Main SQS Processing Queue
   ProcessorQueue:
     Type: AWS::SQS::Queue
     Properties:
@@ -65,7 +61,7 @@ Resources:
         deadLetterTargetArn: !GetAtt ProcessorDeadLetterQueue.Arn
         maxReceiveCount: !Ref SqsMaxReceiveCount
 
-  # 3. SQS Queue Policy allowing SNS to publish
+  # 3. SQS Queue Policy allowing EventBridge to send messages
   ProcessorQueuePolicy:
     Type: AWS::SQS::QueuePolicy
     Properties:
@@ -76,21 +72,31 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service: sns.amazonaws.com
+              Service: events.amazonaws.com
             Action: sqs:SendMessage
             Resource: !GetAtt ProcessorQueue.Arn
             Condition:
               ArnEquals:
-                aws:SourceArn: !Ref DasSnsTopicArn
+                aws:SourceArn: !GetAtt EventBridgeRule.Arn
 
-  # 4. Subscribe SQS to SNS Fanout Topic
-  SnsSubscription:
-    Type: AWS::SNS::Subscription
+  # 4. Amazon EventBridge Rule routing S3 Object Created events
+  EventBridgeRule:
+    Type: AWS::Events::Rule
     Properties:
-      Protocol: sqs
-      Endpoint: !GetAtt ProcessorQueue.Arn
-      TopicArn: !Ref DasSnsTopicArn
-      RawMessageDelivery: false
+      Description: 'Routes S3 Object Created events from the DAS source bucket to SQS queue'
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - Object Created
+        detail:
+          bucket:
+            name:
+              - !Ref DasSourceBucketName
+      Targets:
+        - Id: DasProcessorQueueTarget
+          Arn: !GetAtt ProcessorQueue.Arn
 
   # 5. Lambda Execution IAM Role
   LambdaExecutionRole:
@@ -104,7 +110,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
         - PolicyName: DasProcessorPolicy
           PolicyDocument:
@@ -113,7 +119,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:GetObject
-                Resource: !Sub '${DasSourceBucketArn}/*'
+                Resource: !Sub 'arn:aws:s3:::${DasSourceBucketName}/*'
               - Effect: Allow
                 Action:
                   - s3:PutObject
@@ -143,7 +149,6 @@ Resources:
         Variables:
           DAS_KMS_REGION_NAME: !Ref AWS::Region
           DAS_RDS_RESOURCE_ID: !Ref RdsResourceId
-          # Output bucket for Parquet files
           DAS_OUTPUT_BUCKET: !Ref DasDestinationBucketName
 
   # 7. CloudWatch Log Group with retention policy
@@ -171,6 +176,12 @@ Outputs:
   ProcessorFunctionName:
     Description: 'Lambda Function Name'
     Value: !Ref ProcessorFunction
+  ProcessorQueueArn:
+    Description: 'ARN of the Processing SQS Queue'
+    Value: !GetAtt ProcessorQueue.Arn
+  EventBridgeRuleArn:
+    Description: 'ARN of the EventBridge Rule'
+    Value: !GetAtt EventBridgeRule.Arn
   ProcessorDLQArn:
     Description: 'ARN of the Dead Letter Queue for failed DAS records'
     Value: !GetAtt ProcessorDeadLetterQueue.Arn
