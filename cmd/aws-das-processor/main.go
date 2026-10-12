@@ -48,9 +48,7 @@ func init() {
 }
 
 func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResponse, error) {
-	rdsResourceID := os.Getenv("DAS_RDS_RESOURCE_ID")
-
-	return proc.ProcessSQSEvent(ctx, sqsEvent, rdsResourceID)
+	return proc.Handler(ctx, sqsEvent)
 }
 
 func main() {

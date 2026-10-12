@@ -1666,3 +1666,27 @@ func TestProcessor_EndToEnd_ConcatenatedPayloads(t *testing.T) {
 		t.Errorf("expected 1 KMS Decrypt call due to dataKeyCache, got %d", kmsDecryptCalls)
 	}
 }
+
+func TestProcessor_Handler(t *testing.T) {
+	ctx := context.Background()
+	mockS3 := &mockS3Client{}
+	mockKMS := &mockKMSClient{}
+	p := New(mockS3, mockKMS)
+
+	sqsEvent := events.SQSEvent{
+		Records: []events.SQSMessage{
+			{
+				MessageId: "msg-handler-test",
+				Body:      `{"Service":"Amazon S3","Event":"s3:TestEvent"}`,
+			},
+		},
+	}
+
+	resp, err := p.Handler(ctx, sqsEvent)
+	if err != nil {
+		t.Fatalf("unexpected error from Handler: %v", err)
+	}
+	if len(resp.BatchItemFailures) != 0 {
+		t.Errorf("expected 0 batch item failures, got %d", len(resp.BatchItemFailures))
+	}
+}

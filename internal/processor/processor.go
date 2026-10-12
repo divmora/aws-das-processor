@@ -76,6 +76,12 @@ func (p *Processor) ResolveFiltersForEvent(clusterID, s3Key string, overrideFilt
 	return filter.ResolveFilters(configs, clusterID, s3Key, sourceBucket...)
 }
 
+// Handler serves as the standard AWS Lambda entry point method on Processor.
+func (p *Processor) Handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResponse, error) {
+	rdsResourceID := os.Getenv("DAS_RDS_RESOURCE_ID")
+	return p.ProcessSQSEvent(ctx, sqsEvent, rdsResourceID)
+}
+
 // ProcessSQSEvent processes each SQS message using partial batch failure tracking.
 func (p *Processor) ProcessSQSEvent(ctx context.Context, sqsEvent events.SQSEvent, rdsResourceID string, customFilters ...*filter.FilterConfig) (events.SQSEventResponse, error) {
 	var response events.SQSEventResponse
