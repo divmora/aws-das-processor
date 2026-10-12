@@ -1776,3 +1776,143 @@ func TestParseS3Records_UrlDecoding(t *testing.T) {
 		t.Errorf("expected decoded key %q, got %q", expectedEBKey, ebRecords[0].Key)
 	}
 }
+
+type trackingReadCloser struct {
+	io.Reader
+	closed   bool
+	closeErr error
+}
+
+func (t *trackingReadCloser) Close() error {
+	t.closed = true
+	return t.closeErr
+}
+
+type failingReader struct {
+	err error
+}
+
+func (f *failingReader) Read(p []byte) (n int, err error) {
+	return 0, f.err
+}
+
+func TestProcessor_FetchS3Object_SuccessAndClosed(t *testing.T) {
+	content := []byte("{\"test\": \"payload\"}")
+	tracker := &trackingReadCloser{
+		Reader: bytes.NewReader(content),
+	}
+
+	mockS3 := &mockS3Client{
+		getObjectFunc: func(ctx context.Context, in *s3.GetObjectInput, opt ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+			return &s3.GetObjectOutput{
+				Body: tracker,
+			}, nil
+		},
+	}
+	p := New(mockS3, &mockKMSClient{})
+
+	gotBytes, err := p.FetchS3Object(context.Background(), "my-bucket", "my-key")
+	if err != nil {
+		t.Fatalf("unexpected error fetching S3 object: %v", err)
+	}
+
+	if !bytes.Equal(gotBytes, content) {
+		t.Errorf("expected content %s, got %s", content, gotBytes)
+	}
+
+	if !tracker.closed {
+		t.Errorf("expected S3 response body to be closed via defer, but closed was false")
+	}
+}
+
+func TestProcessor_FetchS3Object_ErrorOnRead_ClosedViaDefer(t *testing.T) {
+	expectedErr := errors.New("simulated socket read timeout")
+	tracker := &trackingReadCloser{
+		Reader: &failingReader{err: expectedErr},
+	}
+
+	mockS3 := &mockS3Client{
+		getObjectFunc: func(ctx context.Context, in *s3.GetObjectInput, opt ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+			return &s3.GetObjectOutput{
+				Body: tracker,
+			}, nil
+		},
+	}
+	p := New(mockS3, &mockKMSClient{})
+
+	_, err := p.FetchS3Object(context.Background(), "my-bucket", "my-key")
+	if err == nil {
+		t.Fatalf("expected error from failed read, got nil")
+	}
+	if !strings.Contains(err.Error(), "simulated socket read timeout") {
+		t.Errorf("expected error to wrap read failure, got: %v", err)
+	}
+
+	if !tracker.closed {
+		t.Errorf("expected S3 response body to be closed via defer on read error, but closed was false")
+	}
+}
+
+func TestProcessor_FetchS3Object_GetObjectError(t *testing.T) {
+	mockS3 := &mockS3Client{
+		getObjectFunc: func(ctx context.Context, in *s3.GetObjectInput, opt ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+			return nil, errors.New("NoSuchKey: The specified key does not exist")
+		},
+	}
+	p := New(mockS3, &mockKMSClient{})
+
+	_, err := p.FetchS3Object(context.Background(), "my-bucket", "missing-key")
+	if err == nil {
+		t.Fatalf("expected error for missing object, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to fetch object") {
+		t.Errorf("unexpected error format: %v", err)
+	}
+}
+
+func TestProcessor_FetchS3Object_NilBody(t *testing.T) {
+	mockS3 := &mockS3Client{
+		getObjectFunc: func(ctx context.Context, in *s3.GetObjectInput, opt ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+			return &s3.GetObjectOutput{
+				Body: nil,
+			}, nil
+		},
+	}
+	p := New(mockS3, &mockKMSClient{})
+
+	_, err := p.FetchS3Object(context.Background(), "my-bucket", "key")
+	if err == nil {
+		t.Fatalf("expected error for nil body, got nil")
+	}
+	if !strings.Contains(err.Error(), "response body is nil") {
+		t.Errorf("expected nil body error, got: %v", err)
+	}
+}
+
+func TestProcessor_FetchS3Object_CloseError(t *testing.T) {
+	content := []byte("payload with close error")
+	tracker := &trackingReadCloser{
+		Reader:   bytes.NewReader(content),
+		closeErr: errors.New("simulated close failure"),
+	}
+
+	mockS3 := &mockS3Client{
+		getObjectFunc: func(ctx context.Context, in *s3.GetObjectInput, opt ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+			return &s3.GetObjectOutput{
+				Body: tracker,
+			}, nil
+		},
+	}
+	p := New(mockS3, &mockKMSClient{})
+
+	gotBytes, err := p.FetchS3Object(context.Background(), "my-bucket", "key")
+	if err != nil {
+		t.Fatalf("unexpected error when close fails with warning: %v", err)
+	}
+	if !bytes.Equal(gotBytes, content) {
+		t.Errorf("expected content %s, got %s", content, gotBytes)
+	}
+	if !tracker.closed {
+		t.Errorf("expected tracker to have been closed")
+	}
+}

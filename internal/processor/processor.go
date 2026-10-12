@@ -248,6 +248,32 @@ func ParseDASPayloads(bodyBytes []byte) ([]model.DASPayload, error) {
 	return payloads, nil
 }
 
+// FetchS3Object retrieves an object from S3 and reads its entire body into memory,
+// guaranteeing that the S3 response body is immediately closed via defer.
+func (p *Processor) FetchS3Object(ctx context.Context, bucket, key string) ([]byte, error) {
+	getObjectOutput, err := p.S3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch object %s/%s: %w", bucket, key, err)
+	}
+	if getObjectOutput.Body == nil {
+		return nil, fmt.Errorf("failed to fetch object %s/%s: response body is nil", bucket, key)
+	}
+	defer func() {
+		if closeErr := getObjectOutput.Body.Close(); closeErr != nil {
+			slog.Warn("Failed to close S3 object body", "bucket", bucket, "key", key, "error", closeErr)
+		}
+	}()
+
+	bodyBytes, err := io.ReadAll(getObjectOutput.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read S3 object body: %w", err)
+	}
+	return bodyBytes, nil
+}
+
 // ProcessMessage handles the complete pipeline for a single SQS message, applying all matched filters
 // to the decrypted and decompressed payload in memory.
 func (p *Processor) ProcessMessage(ctx context.Context, message events.SQSMessage, rdsResourceID string, customFilters ...*filter.FilterConfig) error {
@@ -306,18 +332,9 @@ func (p *Processor) ProcessMessage(ctx context.Context, message events.SQSMessag
 		)
 
 		// 1. Fetch raw object from S3
-		getObjectOutput, err := p.S3Client.GetObject(ctx, &s3.GetObjectInput{
-			Bucket: aws.String(sourceBucket),
-			Key:    aws.String(key),
-		})
+		bodyBytes, err := p.FetchS3Object(ctx, sourceBucket, key)
 		if err != nil {
-			return fmt.Errorf("failed to fetch object %s/%s: %w", sourceBucket, key, err)
-		}
-
-		bodyBytes, err := io.ReadAll(getObjectOutput.Body)
-		getObjectOutput.Body.Close()
-		if err != nil {
-			return fmt.Errorf("failed to read S3 object body: %w", err)
+			return err
 		}
 
 		// 2. Parse the DAS Payload(s) - handles single JSON, concatenated JSON objects, NDJSON, or JSON arrays
