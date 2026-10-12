@@ -403,6 +403,12 @@ func (p *Processor) ProcessMessage(ctx context.Context, message events.SQSMessag
 				DatabaseActivityEventList []map[string]interface{} `json:"databaseActivityEventList"`
 			}
 			if err := json.Unmarshal(decompressedPayload, &container); err != nil {
+				slog.Error("Failed to parse database activity events JSON container",
+					"error", err,
+					"ResourceID", clusterID,
+					"Key", key,
+					"PayloadBytes", len(decompressedPayload),
+				)
 				return fmt.Errorf("failed to parse database activity events JSON: %w", err)
 			}
 

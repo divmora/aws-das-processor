@@ -429,6 +429,53 @@ func TestConvertEventsToParquet_MultiFilterIsolation(t *testing.T) {
 	}
 }
 
+func TestConvertEventsToParquet_NilEventSafety(t *testing.T) {
+	rawEvents := []map[string]interface{}{
+		nil, // Nil event entry
+		{
+			"command":     "SELECT 1",
+			"dbUserName":  "alice",
+			"statementId": "invalid-int-string", // Triggers strconv.ParseInt warning
+			"paramList":   12345,                // Triggers unexpected slice type warning
+		},
+		nil, // Another nil entry
+		{
+			"command":    "SELECT 2",
+			"dbUserName": "bob",
+		},
+	}
+
+	filterConfig := &filter.FilterConfig{Drop: []string{}, Query: map[string]interface{}{}}
+	parquetBytes, rowCount, err := ConvertEventsToParquet(rawEvents, filterConfig)
+	if err != nil {
+		t.Fatalf("unexpected error converting events with nil records: %v", err)
+	}
+
+	if rowCount != 2 {
+		t.Fatalf("expected 2 valid rows written, got %d", rowCount)
+	}
+
+	reader := parquet.NewReader(bytes.NewReader(parquetBytes))
+	var rows []model.DatabaseActivityEvent
+	for {
+		var row model.DatabaseActivityEvent
+		if err := reader.Read(&row); err != nil {
+			break
+		}
+		rows = append(rows, row)
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows in parquet file, got %d", len(rows))
+	}
+	if rows[0].DbUserName != "alice" || rows[0].StatementId != 0 {
+		t.Errorf("expected alice with 0 statementId, got %+v", rows[0])
+	}
+	if rows[1].DbUserName != "bob" {
+		t.Errorf("expected bob, got %+v", rows[1])
+	}
+}
+
 func BenchmarkConvertJSONToParquet(b *testing.B) {
 	dasData := findTestDataFile(b, "das_events.json")
 	filterCfg := &filter.FilterConfig{Drop: []string{}, Query: map[string]interface{}{}}

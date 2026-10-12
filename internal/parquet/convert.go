@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 
 	"github.com/divmora/aws-das-processor/pkg/filter"
@@ -66,11 +67,19 @@ func GetInt64(m map[string]interface{}, key string) int64 {
 		case int:
 			return int64(n)
 		case json.Number:
-			i, _ := n.Int64()
+			i, err := n.Int64()
+			if err != nil {
+				slog.Warn("Failed to coerce json.Number to int64", "key", key, "value", n.String(), "error", err)
+			}
 			return i
 		case string:
-			i, _ := strconv.ParseInt(n, 10, 64)
+			i, err := strconv.ParseInt(n, 10, 64)
+			if err != nil {
+				slog.Warn("Failed to parse string to int64", "key", key, "value", n, "error", err)
+			}
 			return i
+		default:
+			slog.Warn("Unexpected numeric type for field", "key", key, "type", fmt.Sprintf("%T", v), "value", fmt.Sprintf("%v", v))
 		}
 	}
 	return 0
@@ -92,6 +101,8 @@ func GetStringSlice(m map[string]interface{}, key string) []string {
 			return result
 		case []string:
 			return items
+		default:
+			slog.Warn("Unexpected slice type for field", "key", key, "type", fmt.Sprintf("%T", v), "value", fmt.Sprintf("%v", v))
 		}
 	}
 	return nil
@@ -104,6 +115,7 @@ func ConvertJSONToParquet(decompressedJSON []byte, filterConfig *filter.FilterCo
 		DatabaseActivityEventList []map[string]interface{} `json:"databaseActivityEventList"`
 	}
 	if err := json.Unmarshal(decompressedJSON, &container); err != nil {
+		slog.Error("Failed to unmarshal JSON events container", "error", err, "payloadBytes", len(decompressedJSON))
 		return nil, fmt.Errorf("failed to unmarshal JSON events: %w", err)
 	}
 
@@ -118,9 +130,19 @@ func ConvertEventsToParquet(events []map[string]interface{}, filterConfig *filte
 	var buf bytes.Buffer
 	writer := parquet.NewWriter(&buf, parquet.SchemaOf(new(model.DatabaseActivityEvent)), parquet.Compression(&snappy.Codec{}))
 
+	totalEvents := len(events)
+	heartbeatsPruned := 0
+	filteredOut := 0
 	rowCount := 0
+
 	for _, rawEvent := range events {
+		if rawEvent == nil {
+			slog.Warn("Encountered nil event record in events slice, skipping")
+			continue
+		}
+
 		if t, ok := rawEvent["type"].(string); ok && t == "heartbeat" {
+			heartbeatsPruned++
 			continue
 		}
 
@@ -149,15 +171,32 @@ func ConvertEventsToParquet(events []map[string]interface{}, filterConfig *filte
 
 			event := MapToDatabaseActivityEvent(eventMap)
 			if err := writer.Write(event); err != nil {
-				return nil, 0, fmt.Errorf("failed to write parquet row: %w", err)
+				slog.Error("Failed to write parquet row",
+					"error", err,
+					"sessionId", event.SessionId,
+					"statementId", event.StatementId,
+					"dbUserName", event.DbUserName,
+					"command", event.Command,
+				)
+				return nil, 0, fmt.Errorf("failed to write parquet row (session: %s, stmt: %d): %w", event.SessionId, event.StatementId, err)
 			}
 			rowCount++
+		} else {
+			filteredOut++
 		}
 	}
 
 	if err := writer.Close(); err != nil {
+		slog.Error("Failed to close parquet writer", "error", err, "rowsAttempted", rowCount)
 		return nil, 0, fmt.Errorf("failed to close parquet writer: %w", err)
 	}
+
+	slog.Debug("Parquet event conversion completed",
+		"totalEvents", totalEvents,
+		"writtenRows", rowCount,
+		"heartbeatsPruned", heartbeatsPruned,
+		"filteredOut", filteredOut,
+	)
 
 	return buf.Bytes(), rowCount, nil
 }
