@@ -87,6 +87,14 @@ Parameters:
     MaxValue: 1000
     Description: 'The number of times a message is delivered to the processor queue before being moved to the dead-letter queue.'
 
+  LambdaReservedConcurrency:
+    Type: Number
+    Default: -1
+    Description: 'Reserved concurrent executions for the Lambda function. Set to -1 (default) to use the unreserved account concurrency pool, 0 to throttle all invocations, or a positive integer (e.g. 5, 20, 100) to dedicate and cap function concurrency.'
+
+Conditions:
+  HasReservedConcurrency: !Not [!Equals [!Ref LambdaReservedConcurrency, -1]]
+
 Resources:
   # 1. Dead-Letter Queue for Fanout
   ProcessorDeadLetterQueue:
@@ -185,6 +193,7 @@ Resources:
       Role: !GetAtt LambdaExecutionRole.Arn
       Timeout: !Ref LambdaTimeout
       MemorySize: !Ref LambdaMemorySize
+      ReservedConcurrentExecutions: !If [HasReservedConcurrency, !Ref LambdaReservedConcurrency, !Ref 'AWS::NoValue']
       Environment:
         Variables:
           DAS_KMS_REGION_NAME: !Ref AWS::Region
