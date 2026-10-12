@@ -3,6 +3,7 @@ package filter
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -184,16 +185,34 @@ func LoadFilterFile(filePath string) (*FilterConfig, error) {
 	return &config, nil
 }
 
+// ResolveFiltersDir determines the directory containing filter configurations.
+// Resolution order:
+// 1. DAS_FILTERS_DIR environment variable (operator override)
+// 2. ${LAMBDA_TASK_ROOT}/filters if LAMBDA_TASK_ROOT is set (AWS Lambda environment)
+// 3. "filters" relative path (fallback for local development and testing)
+func ResolveFiltersDir() string {
+	if dir := os.Getenv("DAS_FILTERS_DIR"); dir != "" {
+		return dir
+	}
+	if taskRoot := os.Getenv("LAMBDA_TASK_ROOT"); taskRoot != "" {
+		return filepath.Join(taskRoot, "filters")
+	}
+	return "filters"
+}
+
 // LoadFilterConfig loads the filter configuration from a JSON or YAML file.
-// If the file doesn't exist, it attempts to load default configuration or returns an empty config.
+// If the file doesn't exist, it attempts to load default configuration or returns an empty config with a warning.
 func LoadFilterConfig(filterName string) (*FilterConfig, error) {
+	dir := ResolveFiltersDir()
+	return LoadFilterConfigFromDir(dir, filterName)
+}
+
+// LoadFilterConfigFromDir loads the filter configuration from a specified directory.
+func LoadFilterConfigFromDir(dir, filterName string) (*FilterConfig, error) {
 	paths := []string{
-		filepath.Join("filters", filterName+".yaml"),
-		filepath.Join("filters", filterName+".yml"),
-		filepath.Join("filters", filterName+".json"),
-		filepath.Join("filters", "default.yaml"),
-		filepath.Join("filters", "default.yml"),
-		filepath.Join("filters", "default.json"),
+		filepath.Join(dir, filterName+".yaml"),
+		filepath.Join(dir, filterName+".yml"),
+		filepath.Join(dir, filterName+".json"),
 	}
 
 	for _, path := range paths {
@@ -206,6 +225,25 @@ func LoadFilterConfig(filterName string) (*FilterConfig, error) {
 		}
 	}
 
+	// Filter not found, attempt fallback to default config
+	defaultPaths := []string{
+		filepath.Join(dir, "default.yaml"),
+		filepath.Join(dir, "default.yml"),
+		filepath.Join(dir, "default.json"),
+	}
+
+	for _, path := range defaultPaths {
+		if _, err := os.Stat(path); err == nil {
+			slog.Warn("Filter configuration not found, falling back to default", "filterName", filterName, "defaultPath", path)
+			cfg, err := LoadFilterFile(path)
+			if err != nil {
+				return nil, err
+			}
+			return cfg, nil
+		}
+	}
+
+	slog.Warn("Filter configuration not found and no default configuration available", "filterName", filterName, "dir", dir)
 	return &FilterConfig{
 		Name:  filterName,
 		Drop:  []string{},
@@ -214,18 +252,16 @@ func LoadFilterConfig(filterName string) (*FilterConfig, error) {
 }
 
 // LoadAllFilterConfigs scans a directory for all .yaml, .yml, and .json filter configurations,
-// returning them sorted alphabetically by name. If dir is empty, it checks DAS_FILTERS_DIR or defaults to "filters".
+// returning them sorted alphabetically by name. If dir is empty, it uses ResolveFiltersDir().
 func LoadAllFilterConfigs(dir string) ([]*FilterConfig, error) {
 	if dir == "" {
-		dir = os.Getenv("DAS_FILTERS_DIR")
-		if dir == "" {
-			dir = "filters"
-		}
+		dir = ResolveFiltersDir()
 	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
+			slog.Warn("Filters directory does not exist", "dir", dir)
 			return []*FilterConfig{}, nil
 		}
 		return nil, fmt.Errorf("failed to read filters directory %q: %w", dir, err)

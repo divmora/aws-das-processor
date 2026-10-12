@@ -696,3 +696,89 @@ func TestResolveFilters(t *testing.T) {
 		t.Fatalf("expected 0 matches for non-matching bucket, got %d", len(resC))
 	}
 }
+
+func TestResolveFiltersDir(t *testing.T) {
+	origFiltersDir := os.Getenv("DAS_FILTERS_DIR")
+	origTaskRoot := os.Getenv("LAMBDA_TASK_ROOT")
+	defer func() {
+		if origFiltersDir != "" {
+			_ = os.Setenv("DAS_FILTERS_DIR", origFiltersDir)
+		} else {
+			_ = os.Unsetenv("DAS_FILTERS_DIR")
+		}
+		if origTaskRoot != "" {
+			_ = os.Setenv("LAMBDA_TASK_ROOT", origTaskRoot)
+		} else {
+			_ = os.Unsetenv("LAMBDA_TASK_ROOT")
+		}
+	}()
+
+	// Case 1: DAS_FILTERS_DIR takes highest precedence even if LAMBDA_TASK_ROOT is set
+	_ = os.Setenv("DAS_FILTERS_DIR", "/custom/filters/path")
+	_ = os.Setenv("LAMBDA_TASK_ROOT", "/var/task")
+	if got := ResolveFiltersDir(); got != "/custom/filters/path" {
+		t.Errorf("expected DAS_FILTERS_DIR to override LAMBDA_TASK_ROOT, got %q", got)
+	}
+
+	// Case 2: Only DAS_FILTERS_DIR is set
+	_ = os.Setenv("DAS_FILTERS_DIR", "/another/custom/dir")
+	_ = os.Unsetenv("LAMBDA_TASK_ROOT")
+	if got := ResolveFiltersDir(); got != "/another/custom/dir" {
+		t.Errorf("expected /another/custom/dir, got %q", got)
+	}
+
+	// Case 3: DAS_FILTERS_DIR unset, LAMBDA_TASK_ROOT set (Lambda runtime)
+	_ = os.Unsetenv("DAS_FILTERS_DIR")
+	_ = os.Setenv("LAMBDA_TASK_ROOT", "/var/task")
+	expectedLambda := filepath.Join("/var/task", "filters")
+	if got := ResolveFiltersDir(); got != expectedLambda {
+		t.Errorf("expected %q, got %q", expectedLambda, got)
+	}
+
+	// Case 4: Neither is set (local fallback)
+	_ = os.Unsetenv("DAS_FILTERS_DIR")
+	_ = os.Unsetenv("LAMBDA_TASK_ROOT")
+	if got := ResolveFiltersDir(); got != "filters" {
+		t.Errorf("expected \"filters\", got %q", got)
+	}
+}
+
+func TestLoadFilterConfigFromDir(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// 1. Neither requested filter nor default exists
+	cfg, err := LoadFilterConfigFromDir(tmpDir, "missing-filter")
+	if err != nil {
+		t.Fatalf("expected nil error on missing filter, got %v", err)
+	}
+	if len(cfg.Drop) != 0 || len(cfg.Query) != 0 {
+		t.Errorf("expected empty config on missing filter")
+	}
+
+	// 2. Default exists, requested filter missing -> fallback to default
+	defaultContent := []byte(`{"name": "default", "drop": ["fallbackDrop"], "query": {}}`)
+	if err := os.WriteFile(filepath.Join(tmpDir, "default.json"), defaultContent, 0644); err != nil {
+		t.Fatalf("failed to write default.json: %v", err)
+	}
+
+	cfg, err = LoadFilterConfigFromDir(tmpDir, "nonexistent-specific")
+	if err != nil {
+		t.Fatalf("expected nil error on fallback to default, got %v", err)
+	}
+	if len(cfg.Drop) != 1 || cfg.Drop[0] != "fallbackDrop" {
+		t.Errorf("expected fallback to default config, got %+v", cfg.Drop)
+	}
+
+	// 3. Exact filter exists -> loads requested filter
+	customContent := []byte(`{"name": "custom", "drop": ["customDrop"], "query": {}}`)
+	if err := os.WriteFile(filepath.Join(tmpDir, "custom.json"), customContent, 0644); err != nil {
+		t.Fatalf("failed to write custom.json: %v", err)
+	}
+	cfg, err = LoadFilterConfigFromDir(tmpDir, "custom")
+	if err != nil {
+		t.Fatalf("expected nil error loading custom filter, got %v", err)
+	}
+	if len(cfg.Drop) != 1 || cfg.Drop[0] != "customDrop" {
+		t.Errorf("expected custom config, got %+v", cfg.Drop)
+	}
+}

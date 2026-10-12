@@ -27,13 +27,16 @@ func init() {
 	kmsClient := kms.NewFromConfig(cfg)
 	proc = processor.New(s3Client, kmsClient)
 
-	// Pre-load all filter configurations from "filters" directory
-	configs, err := filter.LoadAllFilterConfigs("filters")
+	// Pre-load all filter configurations using resolved filters directory
+	filtersDir := filter.ResolveFiltersDir()
+	configs, err := filter.LoadAllFilterConfigs(filtersDir)
 	if err != nil {
-		slog.Warn("Failed to pre-load filter configs from filters directory", "error", err)
+		slog.Warn("Failed to pre-load filter configs from filters directory", "dir", filtersDir, "error", err)
 	} else if len(configs) > 0 {
 		proc.SetFilterConfigs(configs)
-		slog.Info("Successfully pre-loaded filter configurations", "count", len(configs))
+		slog.Info("Successfully pre-loaded filter configurations", "dir", filtersDir, "count", len(configs))
+	} else {
+		slog.Warn("No filter configurations loaded from filters directory", "dir", filtersDir)
 	}
 }
 

@@ -47,14 +47,10 @@ type Processor struct {
 
 // New creates a new Processor instance with the provided AWS clients.
 func New(s3Client S3Client, kmsClient KMSClient) *Processor {
-	filtersDir := os.Getenv("DAS_FILTERS_DIR")
-	if filtersDir == "" {
-		filtersDir = "filters"
-	}
 	return &Processor{
 		S3Client:   s3Client,
 		KMSClient:  kmsClient,
-		FiltersDir: filtersDir,
+		FiltersDir: filter.ResolveFiltersDir(),
 	}
 }
 
