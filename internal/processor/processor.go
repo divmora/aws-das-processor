@@ -103,11 +103,41 @@ type S3RecordRef struct {
 	Key    string
 }
 
+// IsS3TestEvent returns true if the message is an S3 test notification (s3:TestEvent),
+// either sent directly or wrapped inside an Amazon SNS notification envelope.
+func IsS3TestEvent(body string) bool {
+	var directTest struct {
+		Event string `json:"Event"`
+	}
+	if err := json.Unmarshal([]byte(body), &directTest); err == nil && directTest.Event == "s3:TestEvent" {
+		return true
+	}
+
+	var snsMsg struct {
+		Type    string `json:"Type"`
+		Message string `json:"Message"`
+	}
+	if err := json.Unmarshal([]byte(body), &snsMsg); err == nil && snsMsg.Type == "Notification" && snsMsg.Message != "" {
+		if err := json.Unmarshal([]byte(snsMsg.Message), &directTest); err == nil && directTest.Event == "s3:TestEvent" {
+			return true
+		}
+	}
+
+	return false
+}
+
 // ParseS3Records extracts S3 bucket and object key references from multiple event notification envelopes:
 // 1. Amazon EventBridge S3 notification (modern default): {"source":"aws.s3","detail":{"bucket":{"name":"..."},"object":{"key":"..."}}}
 // 2. Amazon SNS wrapped S3 notification: {"Type":"Notification","Message":"..."}
 // 3. Direct Amazon S3 bucket notification: {"Records":[{"s3":{"bucket":{"name":"..."},"object":{"key":"..."}}}]}
+// 4. Amazon S3 test notification (s3:TestEvent): returns empty slice and nil error
 func ParseS3Records(body string) ([]S3RecordRef, error) {
+	// 0. Check for Amazon S3 test event (s3:TestEvent)
+	if IsS3TestEvent(body) {
+		slog.Info("Received S3 test event notification, skipping")
+		return []S3RecordRef{}, nil
+	}
+
 	// 1. Check for Amazon EventBridge notification (modern standard)
 	var ebEvent model.S3EventBridgeNotification
 	if err := json.Unmarshal([]byte(body), &ebEvent); err == nil && ebEvent.Source == "aws.s3" && ebEvent.Detail.Bucket.Name != "" && ebEvent.Detail.Object.Key != "" {
@@ -171,6 +201,9 @@ func (p *Processor) ProcessMessage(ctx context.Context, message events.SQSMessag
 	records, err := ParseS3Records(message.Body)
 	if err != nil {
 		return err
+	}
+	if len(records) == 0 {
+		return nil
 	}
 
 	for _, record := range records {

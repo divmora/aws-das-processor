@@ -319,6 +319,23 @@ func TestParseS3Records(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:    "Direct Amazon S3 test notification (s3:TestEvent)",
+			body:    `{"Service":"Amazon S3","Event":"s3:TestEvent","Time":"2026-10-12T00:00:00.000Z","Bucket":"my-test-bucket","RequestId":"REQ123","HostId":"HOST456"}`,
+			want:    []S3RecordRef{},
+			wantErr: false,
+		},
+		{
+			name: "SNS wrapped Amazon S3 test notification (s3:TestEvent)",
+			body: `{
+				"Type": "Notification",
+				"MessageId": "msg-test-123",
+				"TopicArn": "arn:aws:sns:us-east-1:123456789012:das-topic",
+				"Message": "{\"Service\":\"Amazon S3\",\"Event\":\"s3:TestEvent\",\"Bucket\":\"my-test-bucket\"}"
+			}`,
+			want:    []S3RecordRef{},
+			wantErr: false,
+		},
+		{
 			name:    "Unrecognized / invalid payload format",
 			body:    `{"unrelated":"json"}`,
 			want:    nil,
@@ -1375,5 +1392,67 @@ func TestProcessor_EndToEnd_MultipleInputS3Buckets(t *testing.T) {
 	}
 	if !strings.HasPrefix(writes[1].key, "audit-b/") {
 		t.Errorf("expected write 1 prefix=audit-b/, got %q", writes[1].key)
+	}
+}
+
+func TestProcessor_EndToEnd_S3TestEvent(t *testing.T) {
+	ctx := context.Background()
+
+	getObjectCalls := 0
+	kmsDecryptCalls := 0
+
+	mockS3 := &mockS3Client{
+		getObjectFunc: func(ctx context.Context, in *s3.GetObjectInput, opt ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+			getObjectCalls++
+			return &s3.GetObjectOutput{}, nil
+		},
+		putObjectFunc: func(ctx context.Context, in *s3.PutObjectInput, opt ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+			return &s3.PutObjectOutput{}, nil
+		},
+	}
+	mockKMS := &mockKMSClient{
+		decryptFunc: func(ctx context.Context, in *kms.DecryptInput, opt ...func(*kms.Options)) (*kms.DecryptOutput, error) {
+			kmsDecryptCalls++
+			return &kms.DecryptOutput{}, nil
+		},
+	}
+
+	p := New(mockS3, mockKMS)
+
+	// 1. Direct s3:TestEvent
+	directMsg := events.SQSMessage{
+		MessageId: "msg-direct-test",
+		Body: `{
+			"Service": "Amazon S3",
+			"Event": "s3:TestEvent",
+			"Time": "2026-10-12T00:00:00.000Z",
+			"Bucket": "my-test-bucket",
+			"RequestId": "REQ123",
+			"HostId": "HOST456"
+		}`,
+	}
+	if err := p.ProcessMessage(ctx, directMsg, ""); err != nil {
+		t.Fatalf("expected nil error for direct s3:TestEvent, got: %v", err)
+	}
+
+	// 2. SNS wrapped s3:TestEvent
+	snsMsg := events.SQSMessage{
+		MessageId: "msg-sns-test",
+		Body: `{
+			"Type": "Notification",
+			"MessageId": "msg-123",
+			"TopicArn": "arn:aws:sns:us-east-1:123456789012:das-topic",
+			"Message": "{\"Service\":\"Amazon S3\",\"Event\":\"s3:TestEvent\",\"Bucket\":\"my-test-bucket\"}"
+		}`,
+	}
+	if err := p.ProcessMessage(ctx, snsMsg, ""); err != nil {
+		t.Fatalf("expected nil error for SNS-wrapped s3:TestEvent, got: %v", err)
+	}
+
+	if getObjectCalls != 0 {
+		t.Errorf("expected 0 GetObject calls for test events, got %d", getObjectCalls)
+	}
+	if kmsDecryptCalls != 0 {
+		t.Errorf("expected 0 KMS Decrypt calls for test events, got %d", kmsDecryptCalls)
 	}
 }
