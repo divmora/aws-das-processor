@@ -174,18 +174,18 @@
           <span>Event Flow Diagram</span>
         </div>
         <pre class="mermaid text-center">
-graph LR
-    RDS[(Amazon RDS / Aurora)] -->|Streams activity records| Kinesis[Kinesis Data Stream]
-    Kinesis -->|Subscribes & delivers| Firehose[Amazon Data Firehose]
-    Firehose -->|Writes raw chunks| S3Source[(Source S3 Bucket)]
-    S3Source -->|EventBridge (Default)| SQS[SQS Queue]
-    S3Source -.->|Classic SNS Fanout| SQS
-    SQS -->|Partial Batch Polling| Lambda[Go Lambda Processor]
-    Lambda -->|KMS Decrypt Context| KMS[AWS KMS]
-    Lambda -->|GZIP / ZLIB Decompress| Decompress[Decompression]
-    Decompress -->|JSON Records| Filter[Declarative YAML Filter DSL]
-    Filter -->|Retained Events| Parquet[Parquet-Go Serialization]
-    Parquet -->|Snappy-compressed Parquet| S3Dest[(Analytics S3 Sink)]
+flowchart LR
+    RDS[("Amazon RDS / Aurora")] -->|"Streams activity records"| Kinesis["Kinesis Data Stream"]
+    Kinesis -->|"Subscribes & delivers"| Firehose["Amazon Data Firehose"]
+    Firehose -->|"Writes raw chunks"| S3Source[("Source S3 Bucket")]
+    S3Source -->|"EventBridge (Default)"| SQS["SQS Queue"]
+    S3Source -.->|"Classic SNS Fanout"| SQS
+    SQS -->|"Partial Batch Polling"| Lambda["Go Lambda Processor"]
+    Lambda -->|"KMS Decrypt Context"| KMS["AWS KMS"]
+    Lambda -->|"GZIP / ZLIB Decompress"| Decompress["Decompression"]
+    Decompress -->|"JSON Records"| Filter["Declarative YAML Filter DSL"]
+    Filter -->|"Retained Events"| Parquet["Parquet-Go Serialization"]
+    Parquet -->|"Snappy-compressed Parquet"| S3Dest[("Analytics S3 Sink")]
         </pre>
       </div>
 
