@@ -344,28 +344,32 @@ func TestLoadFilterConfig(t *testing.T) {
 		t.Errorf("expected empty config on missing filter")
 	}
 
-	// 2. Load JSON filter with Output configuration
+	// 2. Load YAML filter with Output configuration
 	filtersDir := filepath.Join(tmpDir, "filters")
 	if err := os.MkdirAll(filtersDir, 0755); err != nil {
 		t.Fatalf("failed to mkdir filters: %v", err)
 	}
 
-	jsonContent := []byte(`{
-		"drop": ["paramList", "errorMessage"],
-		"query": {"type": "selector", "dimension": "command", "value": "SELECT"},
-		"output": {
-			"format": "hive",
-			"prefix": "analytics",
-			"include_filter": false
-		}
-	}`)
-	if err := os.WriteFile(filepath.Join(filtersDir, "custom.json"), jsonContent, 0644); err != nil {
-		t.Fatalf("failed to write custom.json: %v", err)
+	yamlContent := []byte(`
+drop:
+  - paramList
+  - errorMessage
+query:
+  type: selector
+  dimension: command
+  value: SELECT
+output:
+  format: hive
+  prefix: analytics
+  include_filter: false
+`)
+	if err := os.WriteFile(filepath.Join(filtersDir, "custom.yaml"), yamlContent, 0644); err != nil {
+		t.Fatalf("failed to write custom.yaml: %v", err)
 	}
 
 	cfg, err = LoadFilterConfig("custom")
 	if err != nil {
-		t.Fatalf("expected nil error loading JSON filter, got: %v", err)
+		t.Fatalf("expected nil error loading YAML filter, got: %v", err)
 	}
 	if len(cfg.Drop) != 2 || cfg.Drop[0] != "paramList" {
 		t.Errorf("unexpected Drop fields: %+v", cfg.Drop)
@@ -374,11 +378,11 @@ func TestLoadFilterConfig(t *testing.T) {
 		t.Errorf("unexpected Query type: %v", cfg.Query["type"])
 	}
 	if cfg.Output == nil || cfg.Output.Format != "hive" || cfg.Output.Prefix == nil || *cfg.Output.Prefix != "analytics" || cfg.Output.IncludeFilter != false {
-		t.Errorf("unexpected Output config from JSON: %+v", cfg.Output)
+		t.Errorf("unexpected Output config from YAML: %+v", cfg.Output)
 	}
 
-	// 3. Load YAML filter with Output configuration
-	yamlContent := []byte(`
+	// 3. Load another YAML filter with date partitioning
+	auditContent := []byte(`
 drop:
   - clientApplication
 query:
@@ -391,13 +395,13 @@ output:
   prefix: data-lake
   include_filter: true
 `)
-	if err := os.WriteFile(filepath.Join(filtersDir, "audit.yaml"), yamlContent, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(filtersDir, "audit.yaml"), auditContent, 0644); err != nil {
 		t.Fatalf("failed to write audit.yaml: %v", err)
 	}
 
 	cfg, err = LoadFilterConfig("audit")
 	if err != nil {
-		t.Fatalf("expected nil error loading YAML filter, got: %v", err)
+		t.Fatalf("expected nil error loading audit YAML filter, got: %v", err)
 	}
 	if len(cfg.Drop) != 1 || cfg.Drop[0] != "clientApplication" {
 		t.Errorf("unexpected Drop fields from YAML: %+v", cfg.Drop)
@@ -406,10 +410,10 @@ output:
 		t.Errorf("unexpected Output config from YAML: %+v", cfg.Output)
 	}
 
-	// 4. Fallback to default.json
-	defaultContent := []byte(`{"drop": ["dropFromDefault"], "query": {}}`)
-	if err := os.WriteFile(filepath.Join(filtersDir, "default.json"), defaultContent, 0644); err != nil {
-		t.Fatalf("failed to write default.json: %v", err)
+	// 4. Fallback to default.yaml
+	defaultContent := []byte("drop:\n  - dropFromDefault\nquery: {}\n")
+	if err := os.WriteFile(filepath.Join(filtersDir, "default.yaml"), defaultContent, 0644); err != nil {
+		t.Fatalf("failed to write default.yaml: %v", err)
 	}
 
 	cfg, err = LoadFilterConfig("missing-filter-name")
@@ -417,16 +421,19 @@ output:
 		t.Fatalf("expected nil error falling back to default, got: %v", err)
 	}
 	if len(cfg.Drop) != 1 || cfg.Drop[0] != "dropFromDefault" {
-		t.Errorf("expected fallback to default.json, got %+v", cfg.Drop)
+		t.Errorf("expected fallback to default.yaml, got %+v", cfg.Drop)
 	}
 
-	// 5. Malformed file returns error
-	if err := os.WriteFile(filepath.Join(filtersDir, "malformed.json"), []byte("{bad json"), 0644); err != nil {
-		t.Fatalf("failed to write malformed.json: %v", err)
+	// 5. Non-.yaml files (.json, .yml) are ignored and trigger fallback or empty config
+	_ = os.WriteFile(filepath.Join(filtersDir, "ignored.json"), []byte(`{"drop": ["ignored"]}`), 0644)
+	_ = os.WriteFile(filepath.Join(filtersDir, "ignored-yml.yml"), []byte("drop:\n  - ignored\n"), 0644)
+	cfg, err = LoadFilterConfig("ignored")
+	if err != nil {
+		t.Fatalf("expected nil error for ignored non-yaml filter, got: %v", err)
 	}
-	_, err = LoadFilterConfig("malformed")
-	if err == nil {
-		t.Errorf("expected error loading malformed json, got nil")
+	// "ignored" .json was ignored, so it fell back to default.yaml
+	if len(cfg.Drop) != 1 || cfg.Drop[0] != "dropFromDefault" {
+		t.Errorf("expected fallback to default.yaml when non-yaml filter is requested, got %+v", cfg.Drop)
 	}
 
 	// 6. Malformed YAML returns error
@@ -576,18 +583,20 @@ func TestLoadAllFilterConfigs(t *testing.T) {
 		t.Fatalf("expected nil error and 0 configs for non-existent dir, got: %v, len: %d", err, len(configs))
 	}
 
-	// Write filter files: json, yaml, yml, and an ignored txt file
-	os.WriteFile(filepath.Join(tmpDir, "b-compliance.yaml"), []byte("name: compliance\ndrop:\n  - mac"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "a-audit.json"), []byte(`{"name": "audit", "drop": []}`), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "c-security.yml"), []byte("name: security\ndrop: []"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "readme.txt"), []byte("ignore me"), 0644)
+	// Write filter files: three .yaml files, plus ignored .json, .yml, and .txt files
+	_ = os.WriteFile(filepath.Join(tmpDir, "b-compliance.yaml"), []byte("name: compliance\ndrop:\n  - mac"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "a-audit.yaml"), []byte("name: audit\ndrop: []\n"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "c-security.yaml"), []byte("name: security\ndrop: []\n"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "ignored.json"), []byte(`{"name": "ignored", "drop": []}`), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "ignored.yml"), []byte("name: ignored\ndrop: []\n"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "readme.txt"), []byte("ignore me"), 0644)
 
 	configs, err = LoadAllFilterConfigs(tmpDir)
 	if err != nil {
 		t.Fatalf("failed to load configs: %v", err)
 	}
 	if len(configs) != 3 {
-		t.Fatalf("expected 3 configs, got %d", len(configs))
+		t.Fatalf("expected exactly 3 .yaml configs (ignoring .json, .yml, .txt), got %d", len(configs))
 	}
 	// Verify sorting order: a-audit, b-compliance, c-security
 	if configs[0].Name != "audit" || configs[1].Name != "compliance" || configs[2].Name != "security" {
@@ -756,9 +765,9 @@ func TestLoadFilterConfigFromDir(t *testing.T) {
 	}
 
 	// 2. Default exists, requested filter missing -> fallback to default
-	defaultContent := []byte(`{"name": "default", "drop": ["fallbackDrop"], "query": {}}`)
-	if err := os.WriteFile(filepath.Join(tmpDir, "default.json"), defaultContent, 0644); err != nil {
-		t.Fatalf("failed to write default.json: %v", err)
+	defaultContent := []byte("name: default\ndrop:\n  - fallbackDrop\nquery: {}\n")
+	if err := os.WriteFile(filepath.Join(tmpDir, "default.yaml"), defaultContent, 0644); err != nil {
+		t.Fatalf("failed to write default.yaml: %v", err)
 	}
 
 	cfg, err = LoadFilterConfigFromDir(tmpDir, "nonexistent-specific")
@@ -770,9 +779,9 @@ func TestLoadFilterConfigFromDir(t *testing.T) {
 	}
 
 	// 3. Exact filter exists -> loads requested filter
-	customContent := []byte(`{"name": "custom", "drop": ["customDrop"], "query": {}}`)
-	if err := os.WriteFile(filepath.Join(tmpDir, "custom.json"), customContent, 0644); err != nil {
-		t.Fatalf("failed to write custom.json: %v", err)
+	customContent := []byte("name: custom\ndrop:\n  - customDrop\nquery: {}\n")
+	if err := os.WriteFile(filepath.Join(tmpDir, "custom.yaml"), customContent, 0644); err != nil {
+		t.Fatalf("failed to write custom.yaml: %v", err)
 	}
 	cfg, err = LoadFilterConfigFromDir(tmpDir, "custom")
 	if err != nil {

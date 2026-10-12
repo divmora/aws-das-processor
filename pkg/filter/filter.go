@@ -1,7 +1,6 @@
 package filter
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -152,7 +151,7 @@ func (f *FilterConfig) IsEnabled() bool {
 	return *f.Enabled
 }
 
-// LoadFilterFile loads and parses a single filter file (YAML or JSON) from the specified path.
+// LoadFilterFile loads and parses a single YAML filter file from the specified path.
 func LoadFilterFile(filePath string) (*FilterConfig, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -160,15 +159,8 @@ func LoadFilterFile(filePath string) (*FilterConfig, error) {
 	}
 
 	var config FilterConfig
-	ext := strings.ToLower(filepath.Ext(filePath))
-	if ext == ".yaml" || ext == ".yml" {
-		if err := yaml.Unmarshal(data, &config); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal YAML from %s: %w", filePath, err)
-		}
-	} else {
-		if err := json.Unmarshal(data, &config); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal JSON from %s: %w", filePath, err)
-		}
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal YAML from %s: %w", filePath, err)
 	}
 
 	if config.Name == "" {
@@ -200,7 +192,7 @@ func ResolveFiltersDir() string {
 	return "filters"
 }
 
-// LoadFilterConfig loads the filter configuration from a JSON or YAML file.
+// LoadFilterConfig loads the filter configuration from a YAML file.
 // If the file doesn't exist, it attempts to load default configuration or returns an empty config with a warning.
 func LoadFilterConfig(filterName string) (*FilterConfig, error) {
 	dir := ResolveFiltersDir()
@@ -209,38 +201,24 @@ func LoadFilterConfig(filterName string) (*FilterConfig, error) {
 
 // LoadFilterConfigFromDir loads the filter configuration from a specified directory.
 func LoadFilterConfigFromDir(dir, filterName string) (*FilterConfig, error) {
-	paths := []string{
-		filepath.Join(dir, filterName+".yaml"),
-		filepath.Join(dir, filterName+".yml"),
-		filepath.Join(dir, filterName+".json"),
-	}
-
-	for _, path := range paths {
-		if _, err := os.Stat(path); err == nil {
-			cfg, err := LoadFilterFile(path)
-			if err != nil {
-				return nil, err
-			}
-			return cfg, nil
+	path := filepath.Join(dir, filterName+".yaml")
+	if _, err := os.Stat(path); err == nil {
+		cfg, err := LoadFilterFile(path)
+		if err != nil {
+			return nil, err
 		}
+		return cfg, nil
 	}
 
 	// Filter not found, attempt fallback to default config
-	defaultPaths := []string{
-		filepath.Join(dir, "default.yaml"),
-		filepath.Join(dir, "default.yml"),
-		filepath.Join(dir, "default.json"),
-	}
-
-	for _, path := range defaultPaths {
-		if _, err := os.Stat(path); err == nil {
-			slog.Warn("Filter configuration not found, falling back to default", "filterName", filterName, "defaultPath", path)
-			cfg, err := LoadFilterFile(path)
-			if err != nil {
-				return nil, err
-			}
-			return cfg, nil
+	defaultPath := filepath.Join(dir, "default.yaml")
+	if _, err := os.Stat(defaultPath); err == nil {
+		slog.Warn("Filter configuration not found, falling back to default", "filterName", filterName, "defaultPath", defaultPath)
+		cfg, err := LoadFilterFile(defaultPath)
+		if err != nil {
+			return nil, err
 		}
+		return cfg, nil
 	}
 
 	slog.Warn("Filter configuration not found and no default configuration available", "filterName", filterName, "dir", dir)
@@ -251,7 +229,7 @@ func LoadFilterConfigFromDir(dir, filterName string) (*FilterConfig, error) {
 	}, nil
 }
 
-// LoadAllFilterConfigs scans a directory for all .yaml, .yml, and .json filter configurations,
+// LoadAllFilterConfigs scans a directory for all .yaml filter configurations,
 // returning them sorted alphabetically by name. If dir is empty, it uses ResolveFiltersDir().
 func LoadAllFilterConfigs(dir string) ([]*FilterConfig, error) {
 	if dir == "" {
@@ -279,7 +257,7 @@ func LoadAllFilterConfigs(dir string) ([]*FilterConfig, error) {
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(entry.Name()))
-		if ext != ".yaml" && ext != ".yml" && ext != ".json" {
+		if ext != ".yaml" {
 			continue
 		}
 
