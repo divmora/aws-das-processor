@@ -6,9 +6,9 @@ Parameters:
     Type: String
     Description: 'ARN of the existing SNS Topic that receives S3 Event Notifications from the DAS bucket.'
   
-  DasSourceBucketArn:
-    Type: String
-    Description: 'ARN of the source S3 Bucket containing the encrypted DAS logs.'
+  DasSourceBucketArns:
+    Type: CommaDelimitedList
+    Description: 'Comma-delimited list of source S3 Bucket ARNs containing the encrypted DAS logs (e.g. "arn:aws:s3:::bucket-1,arn:aws:s3:::bucket-2").'
 
   DasDestinationBucketName:
     Type: String
@@ -113,7 +113,11 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:GetObject
-                Resource: !Sub '${DasSourceBucketArn}/*'
+                Resource: !Split
+                  - ','
+                  - !Sub
+                    - '${inner}/*'
+                    - inner: !Join [ '/*,', !Ref DasSourceBucketArns ]
               - Effect: Allow
                 Action:
                   - s3:PutObject

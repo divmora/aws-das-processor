@@ -1232,3 +1232,148 @@ func TestProcessor_EndToEnd_EventBridgeS3Notification(t *testing.T) {
 		t.Errorf("expected key to start with audit/cluster=..., got %q", writtenKey)
 	}
 }
+
+func TestProcessor_EndToEnd_MultipleInputS3Buckets(t *testing.T) {
+	ctx := context.Background()
+
+	key := []byte("01234567890123456789012345678901")
+	sampleEvents := `{"type":"DatabaseActivityMonitoringRecords","version":"1.0","databaseActivityEventList":[{"command":"SELECT 1"}]}`
+	var b bytes.Buffer
+	zw := zlib.NewWriter(&b)
+	zw.Write([]byte(sampleEvents))
+	zw.Close()
+
+	matProv, _ := mpl.NewClient(mpltypes.MaterialProvidersConfig{})
+	aesKeyring, _ := matProv.CreateRawAesKeyring(ctx, mpltypes.CreateRawAesKeyringInput{
+		KeyName:      "DataKey",
+		KeyNamespace: "RawMasterKeyProvider",
+		WrappingKey:  key,
+		WrappingAlg:  mpltypes.AesWrappingAlgAlgAes256GcmIv12Tag16,
+	})
+	encClient, _ := client.NewClient(esdktypes.AwsEncryptionSdkConfig{})
+	encRes, _ := encClient.Encrypt(ctx, esdktypes.EncryptInput{
+		Plaintext: b.Bytes(),
+		Keyring:   aesKeyring,
+	})
+
+	dasPayload := model.DASPayload{
+		Type:                   "DatabaseActivityMonitoringRecords",
+		Version:                "1.0",
+		Key:                    base64.StdEncoding.EncodeToString([]byte("mock-kms-key")),
+		DatabaseActivityEvents: base64.StdEncoding.EncodeToString(encRes.Ciphertext),
+	}
+	dasPayloadBytes, _ := json.Marshal(dasPayload)
+
+	type writeOp struct {
+		bucket string
+		key    string
+	}
+	var writes []writeOp
+
+	mockS3 := &mockS3Client{
+		getObjectFunc: func(ctx context.Context, in *s3.GetObjectInput, opt ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+			return &s3.GetObjectOutput{
+				Body: io.NopCloser(bytes.NewReader(dasPayloadBytes)),
+			}, nil
+		},
+		putObjectFunc: func(ctx context.Context, in *s3.PutObjectInput, opt ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+			writes = append(writes, writeOp{bucket: *in.Bucket, key: *in.Key})
+			return &s3.PutObjectOutput{}, nil
+		},
+	}
+	mockKMS := &mockKMSClient{
+		decryptFunc: func(ctx context.Context, in *kms.DecryptInput, opt ...func(*kms.Options)) (*kms.DecryptOutput, error) {
+			return &kms.DecryptOutput{Plaintext: key}, nil
+		},
+	}
+
+	p := New(mockS3, mockKMS)
+	filterA := &filter.FilterConfig{
+		Name: "bucket-a-filter",
+		Match: &filter.MatchConfig{
+			Buckets: []string{"raw-bucket-prod-a"},
+		},
+		Output: &filter.OutputConfig{
+			Bucket: "dest-bucket-a",
+			Format: "hive",
+			Prefix: strPtr("audit-a"),
+		},
+	}
+	filterB := &filter.FilterConfig{
+		Name: "bucket-b-filter",
+		Match: &filter.MatchConfig{
+			Buckets: []string{"raw-bucket-prod-b"},
+		},
+		Output: &filter.OutputConfig{
+			Bucket: "dest-bucket-b",
+			Format: "hive",
+			Prefix: strPtr("audit-b"),
+		},
+	}
+	p.SetFilterConfigs([]*filter.FilterConfig{filterA, filterB})
+
+	// 1. Process EventBridge message from raw-bucket-prod-a
+	msgA := events.SQSMessage{
+		MessageId: "msg-bucket-a",
+		Body: `{
+			"source": "aws.s3",
+			"detail-type": "Object Created",
+			"detail": {
+				"bucket": {"name": "raw-bucket-prod-a"},
+				"object": {"key": "AWSLogs/123456789012/DAS/us-east-1/cluster-EXAMPLE1234567890ABCDEF/2026/10/12/das-a.json"}
+			}
+		}`,
+	}
+	if err := p.ProcessMessage(ctx, msgA, ""); err != nil {
+		t.Fatalf("unexpected error processing msgA: %v", err)
+	}
+
+	// 2. Process EventBridge message from raw-bucket-prod-b
+	msgB := events.SQSMessage{
+		MessageId: "msg-bucket-b",
+		Body: `{
+			"source": "aws.s3",
+			"detail-type": "Object Created",
+			"detail": {
+				"bucket": {"name": "raw-bucket-prod-b"},
+				"object": {"key": "AWSLogs/123456789012/DAS/us-east-1/cluster-EXAMPLE1234567890ABCDEF/2026/10/12/das-b.json"}
+			}
+		}`,
+	}
+	if err := p.ProcessMessage(ctx, msgB, ""); err != nil {
+		t.Fatalf("unexpected error processing msgB: %v", err)
+	}
+
+	// 3. Process EventBridge message from unmatched bucket (should be skipped)
+	msgOther := events.SQSMessage{
+		MessageId: "msg-bucket-other",
+		Body: `{
+			"source": "aws.s3",
+			"detail-type": "Object Created",
+			"detail": {
+				"bucket": {"name": "raw-bucket-other"},
+				"object": {"key": "AWSLogs/123456789012/DAS/us-east-1/cluster-EXAMPLE1234567890ABCDEF/2026/10/12/das-other.json"}
+			}
+		}`,
+	}
+	if err := p.ProcessMessage(ctx, msgOther, ""); err != nil {
+		t.Fatalf("unexpected error processing msgOther: %v", err)
+	}
+
+	// Check writes: should only have 2 writes (one to dest-bucket-a and one to dest-bucket-b)
+	if len(writes) != 2 {
+		t.Fatalf("expected exactly 2 writes, got %d", len(writes))
+	}
+	if writes[0].bucket != "dest-bucket-a" {
+		t.Errorf("expected write 0 bucket=dest-bucket-a, got %q", writes[0].bucket)
+	}
+	if !strings.HasPrefix(writes[0].key, "audit-a/") {
+		t.Errorf("expected write 0 prefix=audit-a/, got %q", writes[0].key)
+	}
+	if writes[1].bucket != "dest-bucket-b" {
+		t.Errorf("expected write 1 bucket=dest-bucket-b, got %q", writes[1].bucket)
+	}
+	if !strings.HasPrefix(writes[1].key, "audit-b/") {
+		t.Errorf("expected write 1 prefix=audit-b/, got %q", writes[1].key)
+	}
+}

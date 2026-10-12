@@ -414,6 +414,8 @@ match:
     - "cluster-PROD-*"
   paths:
     - "firehose/*"
+  buckets:
+    - "aws-das-logs-raw-*"
 
 # Field-level redaction
 drop:
@@ -476,8 +478,8 @@ output:
       "CompressionFormat": "UNCOMPRESSED"
   }'</code></pre>
           <p class="text-xs text-gray-500 mt-3">
-            <span class="text-amber-400 font-semibold"><i class="fa-solid fa-circle-info mr-1"></i>Automatic Error Manifest Filtering:</span>
-            Objects delivered under <code>ErrorOutputPrefix</code> (e.g. <code>.../errors/...</code>) are automatically recognized and skipped by <code>aws-das-processor</code>, acknowledging the SQS message without unmarshal errors or dead-letter queue (DLQ) retries.
+            <span class="text-amber-400 font-semibold"><i class="fa-solid fa-circle-info mr-1"></i>Multi-Layer Error Manifest Filtering:</span>
+            When using EventBridge, error objects under <code>ErrorOutputPrefix</code> (e.g. <code>.../errors/...</code>) are dropped directly at the event bus by the rule pattern (<code>anything-but.wildcard: ['*/errors/*', '*/error/*']</code>) so they never reach SQS. The Lambda processor also provides runtime defense-in-depth via <code>IsIgnoredS3Key</code> to safely skip them without DLQ retries.
           </p>
         </div>
 
@@ -488,7 +490,7 @@ output:
             <span>Deploy via CloudFormation</span>
           </h4>
           <p class="text-gray-400 text-sm mb-4">
-            Deploy with modern <strong>Amazon EventBridge</strong> (default, eliminates S3 prefix conflicts) or classic <strong>Amazon SNS</strong> fanout:
+            Deploy with modern <strong>Amazon EventBridge</strong> (default, eliminates S3 prefix conflicts, supports multiple source buckets) or classic <strong>Amazon SNS</strong> fanout:
           </p>
 
           <div class="space-y-4">
@@ -501,7 +503,7 @@ output:
   --stack-name aws-das-processor \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
-    DasSourceBucketName=aws-das-logs-raw-123456789012-us-east-1 \
+    DasSourceBucketNames=aws-das-logs-raw-123456789012-us-east-1,aws-das-logs-raw-123456789012-us-west-2 \
     DasDestinationBucketName=analytics-das-parquet-bucket \
     KmsKeyArn=arn:aws:kms:us-east-1:123456789012:key/your-das-key-id \
     LambdaImageUri=123456789012.dkr.ecr.us-east-1.amazonaws.com/aws-das-processor:latest</code></pre>
@@ -517,7 +519,7 @@ output:
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
     DasSnsTopicArn=arn:aws:sns:us-east-1:123456789012:das-sns-topic \
-    DasSourceBucketArn=arn:aws:s3:::aws-das-logs-raw-123456789012-us-east-1 \
+    DasSourceBucketArns=arn:aws:s3:::aws-das-logs-raw-123456789012-us-east-1,arn:aws:s3:::aws-das-logs-raw-123456789012-us-west-2 \
     DasDestinationBucketName=analytics-das-parquet-bucket \
     KmsKeyArn=arn:aws:kms:us-east-1:123456789012:key/your-das-key-id \
     LambdaImageUri=123456789012.dkr.ecr.us-east-1.amazonaws.com/aws-das-processor:latest</code></pre>

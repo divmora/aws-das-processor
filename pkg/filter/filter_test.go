@@ -525,6 +525,37 @@ func TestMatchConfig_Matches(t *testing.T) {
 	if both.Matches("cluster-DEV", "firehose/cluster-DEV/file.json") {
 		t.Errorf("expected both not to match when cluster does not match")
 	}
+
+	bucketOnly := &MatchConfig{
+		Buckets: []string{"raw-bucket-prod-*", "secondary-bucket"},
+	}
+	if !bucketOnly.HasCriteria() {
+		t.Errorf("expected bucketOnly to have criteria")
+	}
+	if !bucketOnly.Matches("any-cluster", "any/path.json", "raw-bucket-prod-us-east-1") {
+		t.Errorf("expected raw-bucket-prod-* to match")
+	}
+	if !bucketOnly.Matches("any-cluster", "any/path.json", "secondary-bucket") {
+		t.Errorf("expected secondary-bucket to match")
+	}
+	if bucketOnly.Matches("any-cluster", "any/path.json", "dev-bucket") {
+		t.Errorf("expected dev-bucket not to match")
+	}
+	if bucketOnly.Matches("any-cluster", "any/path.json") {
+		t.Errorf("expected omitting sourceBucket to not match when Buckets criteria is set")
+	}
+
+	allThree := &MatchConfig{
+		Clusters: []string{"cluster-PROD"},
+		Paths:    []string{"firehose/*"},
+		Buckets:  []string{"raw-bucket-*"},
+	}
+	if !allThree.Matches("cluster-PROD", "firehose/cluster-PROD/file.json", "raw-bucket-1") {
+		t.Errorf("expected allThree to match when cluster, path, and bucket all match")
+	}
+	if allThree.Matches("cluster-PROD", "firehose/cluster-PROD/file.json", "other-bucket") {
+		t.Errorf("expected allThree not to match when bucket does not match")
+	}
 }
 
 func TestLoadAllFilterConfigs(t *testing.T) {
@@ -633,5 +664,35 @@ func TestResolveFilters(t *testing.T) {
 	res = ResolveFilters(onlyProdConfigs, "cluster-DEV", "custom/data.json")
 	if len(res) != 0 {
 		t.Errorf("expected 0 matches when no filter matches and no default exists, got %d", len(res))
+	}
+
+	// 5. Bucket-specific match
+	bucketFilterA := &FilterConfig{
+		Name: "bucket-a-filter",
+		Match: &MatchConfig{
+			Buckets: []string{"source-bucket-a"},
+		},
+	}
+	bucketFilterB := &FilterConfig{
+		Name: "bucket-b-filter",
+		Match: &MatchConfig{
+			Buckets: []string{"source-bucket-b"},
+		},
+	}
+	bucketConfigs := []*FilterConfig{bucketFilterA, bucketFilterB}
+
+	resA := ResolveFilters(bucketConfigs, "cluster-1", "path/data.json", "source-bucket-a")
+	if len(resA) != 1 || resA[0].Name != "bucket-a-filter" {
+		t.Fatalf("expected bucket-a-filter to match source-bucket-a, got %+v", resA)
+	}
+
+	resB := ResolveFilters(bucketConfigs, "cluster-1", "path/data.json", "source-bucket-b")
+	if len(resB) != 1 || resB[0].Name != "bucket-b-filter" {
+		t.Fatalf("expected bucket-b-filter to match source-bucket-b, got %+v", resB)
+	}
+
+	resC := ResolveFilters(bucketConfigs, "cluster-1", "path/data.json", "source-bucket-other")
+	if len(resC) != 0 {
+		t.Fatalf("expected 0 matches for non-matching bucket, got %d", len(resC))
 	}
 }

@@ -11,7 +11,7 @@ Welcome to the **AWS Database Activity Streams (DAS) Processor** repository. The
 ### Event Ingestion & Processing Flow
 1. **Database Activity Streams**: RDS/Aurora publishes encrypted, zlib-compressed activity records to an Amazon Kinesis data stream (`aws-rds-das-cluster-...`).
 2. **Firehose Delivery to S3**: An Amazon Data Firehose delivery stream consumes the Kinesis stream and delivers raw chunks into the source S3 bucket (`AWSLogs/<AccountID>/DAS/<Region>/<ClusterID>/...`).
-3. **Event Notification via EventBridge or SNS to SQS**: S3 publishes an Object Created event to Amazon EventBridge (modern standard) or an SNS fanout topic, delivering it to the processor SQS queue.
+3. **Event Notification via EventBridge or SNS to SQS**: S3 publishes an Object Created event across one or multiple raw buckets to Amazon EventBridge (modern standard, with automatic error manifest exclusion) or an SNS fanout topic, delivering it to the processor SQS queue.
 4. **Lambda Trigger**: AWS Lambda polls the SQS queue using partial batch failure handling (`ReportBatchItemFailures`).
 5. **Envelope Decryption**: Lambda downloads the raw log chunk from S3 and decrypts the encrypted payload using AWS KMS and the AWS Encryption SDK for Go (`github.com/aws/aws-encryption-sdk/releases/go/encryption-sdk`) with the RDS Resource ID encryption context (dynamically extracted from the S3 key path or configured via `DAS_RDS_RESOURCE_ID`).
 6. **Decompression & Parsing**: The decrypted stream is decompressed via `compress/zlib` and parsed into structured JSON database activity records.

@@ -64,8 +64,8 @@ func (p *Processor) SetFilterConfigs(configs []*filter.FilterConfig) {
 }
 
 // ResolveFiltersForEvent determines which filters match the given event, using custom overrides,
-// preloaded configs, or auto-discovering from FiltersDir.
-func (p *Processor) ResolveFiltersForEvent(clusterID, s3Key string, overrideFilters []*filter.FilterConfig) []*filter.FilterConfig {
+// preloaded configs, or auto-discovering from FiltersDir, and taking into account cluster, S3 key, and optional source bucket.
+func (p *Processor) ResolveFiltersForEvent(clusterID, s3Key string, overrideFilters []*filter.FilterConfig, sourceBucket ...string) []*filter.FilterConfig {
 	configs := overrideFilters
 	if len(configs) == 0 {
 		configs = p.FilterConfigs
@@ -76,7 +76,7 @@ func (p *Processor) ResolveFiltersForEvent(clusterID, s3Key string, overrideFilt
 			p.FilterConfigs = loaded
 		}
 	}
-	return filter.ResolveFilters(configs, clusterID, s3Key)
+	return filter.ResolveFilters(configs, clusterID, s3Key, sourceBucket...)
 }
 
 // ProcessSQSEvent processes each SQS message using partial batch failure tracking.
@@ -190,7 +190,7 @@ func (p *Processor) ProcessMessage(ctx context.Context, message events.SQSMessag
 			return fmt.Errorf("missing RDS resource ID: unable to extract from S3 key %q and no fallback DAS_RDS_RESOURCE_ID configured", key)
 		}
 
-		matchedFilters := p.ResolveFiltersForEvent(clusterID, key, customFilters)
+		matchedFilters := p.ResolveFiltersForEvent(clusterID, key, customFilters, sourceBucket)
 		if len(matchedFilters) == 0 {
 			slog.Info("No matching filters found for event, skipping",
 				"SourceBucket", sourceBucket,

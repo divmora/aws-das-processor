@@ -21,24 +21,45 @@ type OutputConfig struct {
 	IncludeFilter bool    `json:"include_filter,omitempty" yaml:"include_filter,omitempty"` // whether to include /<filter-name>/ in path
 }
 
-// MatchConfig defines criteria for matching an incoming DAS event by cluster or S3 path
+// MatchConfig defines criteria for matching an incoming DAS event by cluster, S3 path, or source bucket
 type MatchConfig struct {
 	Clusters []string `json:"clusters,omitempty" yaml:"clusters,omitempty"`
 	Paths    []string `json:"paths,omitempty" yaml:"paths,omitempty"`
+	Buckets  []string `json:"buckets,omitempty" yaml:"buckets,omitempty"`
 }
 
-// HasCriteria returns true if the match configuration has any cluster or path filters defined.
+// HasCriteria returns true if the match configuration has any cluster, path, or bucket filters defined.
 func (m *MatchConfig) HasCriteria() bool {
-	return m != nil && (len(m.Clusters) > 0 || len(m.Paths) > 0)
+	return m != nil && (len(m.Clusters) > 0 || len(m.Paths) > 0 || len(m.Buckets) > 0)
 }
 
-// Matches returns true if the given clusterID and s3Key satisfy the match configuration.
-// If both Clusters and Paths are specified, both must match.
-// If Clusters is non-empty, clusterID must match at least one pattern.
-// If Paths is non-empty, s3Key must match at least one pattern.
-func (m *MatchConfig) Matches(clusterID, s3Key string) bool {
+// Matches returns true if the given clusterID, s3Key, and optional sourceBucket satisfy the match configuration.
+// If any of Clusters, Paths, or Buckets are specified, all specified criteria must match.
+// If sourceBucket is omitted or empty and Buckets criteria is specified, it returns false.
+func (m *MatchConfig) Matches(clusterID, s3Key string, sourceBucket ...string) bool {
 	if m == nil {
 		return false
+	}
+
+	bucket := ""
+	if len(sourceBucket) > 0 {
+		bucket = sourceBucket[0]
+	}
+
+	if len(m.Buckets) > 0 {
+		if bucket == "" {
+			return false
+		}
+		matchedBucket := false
+		for _, pattern := range m.Buckets {
+			if MatchPattern(pattern, bucket) {
+				matchedBucket = true
+				break
+			}
+		}
+		if !matchedBucket {
+			return false
+		}
 	}
 
 	if len(m.Clusters) > 0 {
@@ -67,7 +88,7 @@ func (m *MatchConfig) Matches(clusterID, s3Key string) bool {
 		}
 	}
 
-	return len(m.Clusters) > 0 || len(m.Paths) > 0
+	return len(m.Clusters) > 0 || len(m.Paths) > 0 || len(m.Buckets) > 0
 }
 
 // MatchPattern checks if target matches pattern, supporting wildcards (* and ?),
@@ -243,18 +264,23 @@ func LoadAllFilterConfigs(dir string) ([]*FilterConfig, error) {
 }
 
 // ResolveFilters determines which filters should be applied to an incoming event
-// given a pool of available filters, the cluster ID, and the S3 key.
+// given a pool of available filters, the cluster ID, S3 key, and optional source bucket.
 // Any disabled filters (enabled: false) are skipped.
-func ResolveFilters(configs []*FilterConfig, clusterID, s3Key string) []*FilterConfig {
+func ResolveFilters(configs []*FilterConfig, clusterID, s3Key string, sourceBucket ...string) []*FilterConfig {
 	var matched []*FilterConfig
 	var fallback *FilterConfig
+
+	bucket := ""
+	if len(sourceBucket) > 0 {
+		bucket = sourceBucket[0]
+	}
 
 	for _, cfg := range configs {
 		if !cfg.IsEnabled() {
 			continue
 		}
 		if cfg.Match.HasCriteria() {
-			if cfg.Match.Matches(clusterID, s3Key) {
+			if cfg.Match.Matches(clusterID, s3Key, bucket) {
 				matched = append(matched, cfg)
 			}
 		} else {

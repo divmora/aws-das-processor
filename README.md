@@ -102,7 +102,8 @@ output:
 - **`kms_region`**: Optional AWS region where the RDS KMS customer managed key (CMK) resides. Enables cross-region decryption when databases reside across multiple AWS regions.
 - **`match.clusters`**: List of RDS DB cluster/instance patterns. If non-empty, the event's cluster ID must match at least one pattern.
 - **`match.paths`**: List of S3 key patterns or directory prefixes. If non-empty, the incoming S3 key must match at least one pattern.
-- If both `clusters` and `paths` are configured, **both** must match (AND condition).
+- **`match.buckets`**: List of source S3 bucket name patterns (e.g. `["aws-das-logs-raw-*"]`). If non-empty, the incoming source bucket must match at least one pattern.
+- If multiple criteria (`clusters`, `paths`, `buckets`) are configured, **all** specified criteria must match (AND condition).
 
 ---
 
@@ -154,7 +155,9 @@ aws firehose create-delivery-stream \
 
 > **Prefix Best Practice**: Setting `Prefix` to `AWSLogs/<AccountID>/DAS/<Region>/cluster-EXAMPLE1234567890ABCDEF/` allows `aws-das-processor` to dynamically discover the RDS Resource ID directly from S3 key directory segments, ensuring exact matching of the KMS encryption context (`aws:rds:dbc-id`).
 >
-> **Automatic Error Manifest Filtering**: If Firehose encounters delivery or processing issues, it writes error logs under `ErrorOutputPrefix` (`.../errors/...`). `aws-das-processor` automatically identifies and skips these error files, acknowledging the SQS message without triggering unmarshal errors or dead-letter queue (DLQ) retries.
+> **Multi-Layer Error Manifest Filtering**:
+> - **At EventBridge (Edge/Ingestion Filter)**: The EventBridge rule natively filters out error delivery manifests with `anything-but.wildcard: ['*/errors/*', '*/error/*']`, dropping error events at the event bus so they never enter SQS or trigger Lambda invocations.
+> - **At Processor Runtime (Defense-in-Depth)**: The Go processor runtime automatically inspects incoming keys with `IsIgnoredS3Key`, gracefully acknowledging and skipping any error objects delivered via direct S3 notifications or SNS fanout without unmarshal errors or dead-letter queue (DLQ) retries.
 
 ### Cross-Region KMS Decryption
 
@@ -258,7 +261,7 @@ The Lambda execution role requires the following least-privilege IAM policy perm
 
 ### Option A: Modern Architecture via EventBridge (Recommended)
 
-Requires only enabling EventBridge notifications on your source S3 bucket (`EventBridgeEnabled: true`). Eliminates S3 prefix-overlap restrictions.
+Requires only enabling EventBridge notifications on your source S3 bucket(s) (`EventBridgeEnabled: true`). Supports one or multiple source buckets, eliminates S3 prefix-overlap restrictions, and natively filters out Firehose error manifests before queue delivery:
 
 ```bash
 aws cloudformation deploy \
@@ -266,7 +269,7 @@ aws cloudformation deploy \
   --stack-name aws-das-processor \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
-    DasSourceBucketName=aws-das-logs-raw-123456789012-us-east-1 \
+    DasSourceBucketNames=aws-das-logs-raw-123456789012-us-east-1,aws-das-logs-raw-123456789012-us-west-2 \
     DasDestinationBucketName=analytics-das-parquet-bucket \
     KmsKeyArn=arn:aws:kms:us-east-1:123456789012:key/your-das-key-id \
     LambdaImageUri=123456789012.dkr.ecr.us-east-1.amazonaws.com/aws-das-processor:latest
@@ -274,7 +277,7 @@ aws cloudformation deploy \
 
 ### Option B: Classic Architecture via SNS Fanout
 
-For environments with an existing SNS topic receiving S3 notifications:
+For environments with an existing SNS topic receiving S3 notifications across one or multiple source buckets:
 
 ```bash
 aws cloudformation deploy \
@@ -283,7 +286,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
     DasSnsTopicArn=arn:aws:sns:us-east-1:123456789012:das-sns-topic \
-    DasSourceBucketArn=arn:aws:s3:::aws-das-logs-raw-123456789012-us-east-1 \
+    DasSourceBucketArns=arn:aws:s3:::aws-das-logs-raw-123456789012-us-east-1,arn:aws:s3:::aws-das-logs-raw-123456789012-us-west-2 \
     DasDestinationBucketName=analytics-das-parquet-bucket \
     KmsKeyArn=arn:aws:kms:us-east-1:123456789012:key/your-das-key-id \
     LambdaImageUri=123456789012.dkr.ecr.us-east-1.amazonaws.com/aws-das-processor:latest
