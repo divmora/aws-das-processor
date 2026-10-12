@@ -160,3 +160,107 @@ func TestDecryptAWSEncryptionSDKPayload_NonCommittingAlgorithmSuite(t *testing.T
 		t.Errorf("expected %q, got %q", string(plaintext), string(decrypted))
 	}
 }
+
+// TestDecryptAWSEncryptionSDKPayload_BCNamespace verifies that payloads encrypted with
+// KeyNamespace "BC" (the exact provider ID embedded by AWS RDS Database Activity Streams Java JceMasterKey)
+// are successfully decrypted by the MultiKeyring.
+func TestDecryptAWSEncryptionSDKPayload_BCNamespace(t *testing.T) {
+	ctx := context.Background()
+	rawKey := []byte("01234567890123456789012345678901") // 32-byte key
+	plaintext := []byte("AWS RDS DAS payload with BC provider namespace")
+
+	matProv, err := mpl.NewClient(mpltypes.MaterialProvidersConfig{})
+	if err != nil {
+		t.Fatalf("failed to create mpl client: %v", err)
+	}
+
+	// Encrypt with KeyNamespace "BC" (exact RDS DAS format)
+	aesKeyring, err := matProv.CreateRawAesKeyring(ctx, mpltypes.CreateRawAesKeyringInput{
+		KeyName:      "DataKey",
+		KeyNamespace: "BC",
+		WrappingKey:  rawKey,
+		WrappingAlg:  mpltypes.AesWrappingAlgAlgAes256GcmIv12Tag16,
+	})
+	if err != nil {
+		t.Fatalf("failed to create keyring: %v", err)
+	}
+
+	forbidEncryptPolicy := mpltypes.ESDKCommitmentPolicyForbidEncryptAllowDecrypt
+	encClient, err := client.NewClient(esdktypes.AwsEncryptionSdkConfig{
+		CommitmentPolicy: &forbidEncryptPolicy,
+	})
+	if err != nil {
+		t.Fatalf("failed to create esdk client: %v", err)
+	}
+
+	nonCommittingSuite := mpltypes.ESDKAlgorithmSuiteIdAlgAes256GcmIv12Tag16HkdfSha256
+	encOutput, err := encClient.Encrypt(ctx, esdktypes.EncryptInput{
+		Plaintext:        plaintext,
+		Keyring:          aesKeyring,
+		AlgorithmSuiteId: &nonCommittingSuite,
+	})
+	if err != nil {
+		t.Fatalf("failed to encrypt with BC namespace: %v", err)
+	}
+
+	// Verify that DecryptAWSEncryptionSDKPayload unmarshals and decrypts the BC namespace
+	decrypted, err := DecryptAWSEncryptionSDKPayload(ctx, encOutput.Ciphertext, rawKey)
+	if err != nil {
+		t.Fatalf("failed to decrypt BC namespace payload: %v", err)
+	}
+	if string(decrypted) != string(plaintext) {
+		t.Errorf("expected %q, got %q", string(plaintext), string(decrypted))
+	}
+}
+
+// TestDecryptAWSEncryptionSDKPayload_CustomNamespaceViaEnv verifies that a custom
+// namespace configured through DAS_KEY_NAMESPACE is properly recognized and decrypted.
+func TestDecryptAWSEncryptionSDKPayload_CustomNamespaceViaEnv(t *testing.T) {
+	ctx := context.Background()
+	rawKey := []byte("01234567890123456789012345678901") // 32-byte key
+	plaintext := []byte("Custom namespace payload test")
+
+	customNS := "CustomCorporateMasterKeyProvider"
+	t.Setenv("DAS_KEY_NAMESPACE", customNS)
+
+	matProv, err := mpl.NewClient(mpltypes.MaterialProvidersConfig{})
+	if err != nil {
+		t.Fatalf("failed to create mpl client: %v", err)
+	}
+
+	aesKeyring, err := matProv.CreateRawAesKeyring(ctx, mpltypes.CreateRawAesKeyringInput{
+		KeyName:      "DataKey",
+		KeyNamespace: customNS,
+		WrappingKey:  rawKey,
+		WrappingAlg:  mpltypes.AesWrappingAlgAlgAes256GcmIv12Tag16,
+	})
+	if err != nil {
+		t.Fatalf("failed to create keyring: %v", err)
+	}
+
+	forbidEncryptPolicy := mpltypes.ESDKCommitmentPolicyForbidEncryptAllowDecrypt
+	encClient, err := client.NewClient(esdktypes.AwsEncryptionSdkConfig{
+		CommitmentPolicy: &forbidEncryptPolicy,
+	})
+	if err != nil {
+		t.Fatalf("failed to create esdk client: %v", err)
+	}
+
+	nonCommittingSuite := mpltypes.ESDKAlgorithmSuiteIdAlgAes256GcmIv12Tag16HkdfSha256
+	encOutput, err := encClient.Encrypt(ctx, esdktypes.EncryptInput{
+		Plaintext:        plaintext,
+		Keyring:          aesKeyring,
+		AlgorithmSuiteId: &nonCommittingSuite,
+	})
+	if err != nil {
+		t.Fatalf("failed to encrypt with custom namespace: %v", err)
+	}
+
+	decrypted, err := DecryptAWSEncryptionSDKPayload(ctx, encOutput.Ciphertext, rawKey)
+	if err != nil {
+		t.Fatalf("failed to decrypt custom namespace payload: %v", err)
+	}
+	if string(decrypted) != string(plaintext) {
+		t.Errorf("expected %q, got %q", string(plaintext), string(decrypted))
+	}
+}

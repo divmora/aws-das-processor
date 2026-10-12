@@ -9,3 +9,5 @@ bin/
 .idea/
 .vscode/
 .env
+build/
+scratch/

@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"strings"
 
 	mpl "github.com/aws/aws-cryptographic-material-providers-library/releases/go/mpl/awscryptographymaterialproviderssmithygenerated"
 	mpltypes "github.com/aws/aws-cryptographic-material-providers-library/releases/go/mpl/awscryptographymaterialproviderssmithygeneratedtypes"
@@ -17,22 +19,47 @@ import (
 const MaxDecompressedSize = 256 * 1024 * 1024
 
 // DecryptAWSEncryptionSDKPayload uses the plaintext data key to decrypt the AWS Encryption SDK message format.
+// It instantiates a MultiKeyring supporting "BC" (standard RDS DAS BouncyCastle provider),
+// "RawMasterKeyProvider", and any custom namespace configured via DAS_KEY_NAMESPACE.
 func DecryptAWSEncryptionSDKPayload(ctx context.Context, ciphertext, plaintextDataKey []byte) ([]byte, error) {
 	matProv, err := mpl.NewClient(mpltypes.MaterialProvidersConfig{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create material providers client: %w", err)
 	}
 
-	// The keyNamespace and keyName must match what was used during encryption (in the Python RawMasterKeyProvider)
-	aesKeyRingInput := mpltypes.CreateRawAesKeyringInput{
-		KeyName:      "DataKey",
-		KeyNamespace: "RawMasterKeyProvider",
-		WrappingKey:  plaintextDataKey,
-		WrappingAlg:  mpltypes.AesWrappingAlgAlgAes256GcmIv12Tag16,
+	keyName := os.Getenv("DAS_KEY_NAME")
+	if keyName == "" {
+		keyName = "DataKey"
 	}
-	aesKeyring, err := matProv.CreateRawAesKeyring(ctx, aesKeyRingInput)
+
+	// Supported key namespaces:
+	// 1. "BC" - BouncyCastle JceMasterKey provider (standard AWS RDS Database Activity Streams)
+	// 2. "RawMasterKeyProvider" - Python AWS Encryption SDK raw AES master key provider
+	// 3. Custom namespace via DAS_KEY_NAMESPACE if configured
+	candidateNamespaces := []string{"BC", "RawMasterKeyProvider"}
+	if customNS := strings.TrimSpace(os.Getenv("DAS_KEY_NAMESPACE")); customNS != "" {
+		candidateNamespaces = append([]string{customNS}, candidateNamespaces...)
+	}
+
+	var childKeyrings []mpltypes.IKeyring
+	for _, ns := range candidateNamespaces {
+		kr, err := matProv.CreateRawAesKeyring(ctx, mpltypes.CreateRawAesKeyringInput{
+			KeyName:      keyName,
+			KeyNamespace: ns,
+			WrappingKey:  plaintextDataKey,
+			WrappingAlg:  mpltypes.AesWrappingAlgAlgAes256GcmIv12Tag16,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create raw aes keyring for namespace %q: %w", ns, err)
+		}
+		childKeyrings = append(childKeyrings, kr)
+	}
+
+	keyring, err := matProv.CreateMultiKeyring(ctx, mpltypes.CreateMultiKeyringInput{
+		ChildKeyrings: childKeyrings,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create raw aes keyring: %w", err)
+		return nil, fmt.Errorf("failed to create multi keyring: %w", err)
 	}
 
 	commitmentPolicy := mpltypes.ESDKCommitmentPolicyRequireEncryptAllowDecrypt
@@ -45,7 +72,7 @@ func DecryptAWSEncryptionSDKPayload(ctx context.Context, ciphertext, plaintextDa
 
 	decryptOutput, err := encryptionClient.Decrypt(ctx, esdktypes.DecryptInput{
 		Ciphertext: ciphertext,
-		Keyring:    aesKeyring,
+		Keyring:    keyring,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt payload: %w", err)
