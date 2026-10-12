@@ -1456,3 +1456,191 @@ func TestProcessor_EndToEnd_S3TestEvent(t *testing.T) {
 		t.Errorf("expected 0 KMS Decrypt calls for test events, got %d", kmsDecryptCalls)
 	}
 }
+
+func TestParseDASPayloads(t *testing.T) {
+	t.Run("Single JSON object", func(t *testing.T) {
+		input := []byte(`{"type":"record","version":"1.0","databaseActivityEvents":"payload1","key":"key1"}`)
+		payloads, err := ParseDASPayloads(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(payloads) != 1 {
+			t.Fatalf("expected 1 payload, got %d", len(payloads))
+		}
+		if payloads[0].Key != "key1" || payloads[0].DatabaseActivityEvents != "payload1" {
+			t.Errorf("unexpected payload content: %+v", payloads[0])
+		}
+	})
+
+	t.Run("Concatenated JSON objects (Firehose stream format)", func(t *testing.T) {
+		input := []byte(`{"type":"record","version":"1.0","databaseActivityEvents":"payload1","key":"key1"}{"type":"record","version":"1.0","databaseActivityEvents":"payload2","key":"key2"}{"type":"record","version":"1.0","databaseActivityEvents":"payload3","key":"key3"}`)
+		payloads, err := ParseDASPayloads(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(payloads) != 3 {
+			t.Fatalf("expected 3 payloads, got %d", len(payloads))
+		}
+		if payloads[0].Key != "key1" || payloads[1].Key != "key2" || payloads[2].Key != "key3" {
+			t.Errorf("unexpected payload keys: %v, %v, %v", payloads[0].Key, payloads[1].Key, payloads[2].Key)
+		}
+	})
+
+	t.Run("Newline-delimited JSON (NDJSON)", func(t *testing.T) {
+		input := []byte("{\"type\":\"record\",\"version\":\"1.0\",\"databaseActivityEvents\":\"payload1\",\"key\":\"key1\"}\n{\"type\":\"record\",\"version\":\"1.0\",\"databaseActivityEvents\":\"payload2\",\"key\":\"key2\"}\n")
+		payloads, err := ParseDASPayloads(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(payloads) != 2 {
+			t.Fatalf("expected 2 payloads, got %d", len(payloads))
+		}
+		if payloads[0].Key != "key1" || payloads[1].Key != "key2" {
+			t.Errorf("unexpected payload keys: %v, %v", payloads[0].Key, payloads[1].Key)
+		}
+	})
+
+	t.Run("JSON array format", func(t *testing.T) {
+		input := []byte(`[{"type":"record","version":"1.0","databaseActivityEvents":"payload1","key":"key1"},{"type":"record","version":"1.0","databaseActivityEvents":"payload2","key":"key2"}]`)
+		payloads, err := ParseDASPayloads(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(payloads) != 2 {
+			t.Fatalf("expected 2 payloads, got %d", len(payloads))
+		}
+		if payloads[0].Key != "key1" || payloads[1].Key != "key2" {
+			t.Errorf("unexpected payload keys: %v, %v", payloads[0].Key, payloads[1].Key)
+		}
+	})
+
+	t.Run("Empty payload returns error", func(t *testing.T) {
+		_, err := ParseDASPayloads([]byte("   \n\t  "))
+		if err == nil {
+			t.Fatal("expected error for empty payload, got nil")
+		}
+	})
+
+	t.Run("Malformed JSON returns error", func(t *testing.T) {
+		_, err := ParseDASPayloads([]byte(`{"type": invalid json`))
+		if err == nil {
+			t.Fatal("expected error for malformed payload, got nil")
+		}
+	})
+}
+
+func TestProcessor_EndToEnd_ConcatenatedPayloads(t *testing.T) {
+	ctx := context.Background()
+
+	key := []byte("01234567890123456789012345678901")
+
+	// Payload 1
+	sampleEvents1 := `{"type":"DatabaseActivityMonitoringRecords","version":"1.0","databaseActivityEventList":[{"command":"SELECT 1"}]}`
+	var b1 bytes.Buffer
+	zw1 := zlib.NewWriter(&b1)
+	zw1.Write([]byte(sampleEvents1))
+	zw1.Close()
+
+	// Payload 2
+	sampleEvents2 := `{"type":"DatabaseActivityMonitoringRecords","version":"1.0","databaseActivityEventList":[{"command":"INSERT INTO table VALUES (2)"}]}`
+	var b2 bytes.Buffer
+	zw2 := zlib.NewWriter(&b2)
+	zw2.Write([]byte(sampleEvents2))
+	zw2.Close()
+
+	matProv, _ := mpl.NewClient(mpltypes.MaterialProvidersConfig{})
+	aesKeyring, _ := matProv.CreateRawAesKeyring(ctx, mpltypes.CreateRawAesKeyringInput{
+		KeyName:      "DataKey",
+		KeyNamespace: "RawMasterKeyProvider",
+		WrappingKey:  key,
+		WrappingAlg:  mpltypes.AesWrappingAlgAlgAes256GcmIv12Tag16,
+	})
+	encClient, _ := client.NewClient(esdktypes.AwsEncryptionSdkConfig{})
+
+	res1, _ := encClient.Encrypt(ctx, esdktypes.EncryptInput{
+		Plaintext: b1.Bytes(),
+		Keyring:   aesKeyring,
+	})
+	res2, _ := encClient.Encrypt(ctx, esdktypes.EncryptInput{
+		Plaintext: b2.Bytes(),
+		Keyring:   aesKeyring,
+	})
+
+	dasPayload1 := model.DASPayload{
+		Type:                   "record",
+		Version:                "1.0",
+		DatabaseActivityEvents: base64.StdEncoding.EncodeToString(res1.Ciphertext),
+		Key:                    base64.StdEncoding.EncodeToString([]byte("kms-encrypted-key-data")),
+	}
+	p1Bytes, _ := json.Marshal(dasPayload1)
+
+	dasPayload2 := model.DASPayload{
+		Type:                   "record",
+		Version:                "1.0",
+		DatabaseActivityEvents: base64.StdEncoding.EncodeToString(res2.Ciphertext),
+		Key:                    base64.StdEncoding.EncodeToString([]byte("kms-encrypted-key-data")),
+	}
+	p2Bytes, _ := json.Marshal(dasPayload2)
+
+	// Concatenate both JSON objects back-to-back without newline (Firehose buffer delivery format)
+	concatenatedBytes := append(p1Bytes, p2Bytes...)
+
+	var writtenData []byte
+	mockS3 := &mockS3Client{
+		getObjectFunc: func(ctx context.Context, in *s3.GetObjectInput, opt ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+			return &s3.GetObjectOutput{
+				Body: io.NopCloser(bytes.NewReader(concatenatedBytes)),
+			}, nil
+		},
+		putObjectFunc: func(ctx context.Context, in *s3.PutObjectInput, opt ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+			writtenData, _ = io.ReadAll(in.Body)
+			return &s3.PutObjectOutput{}, nil
+		},
+	}
+
+	kmsDecryptCalls := 0
+	mockKMS := &mockKMSClient{
+		decryptFunc: func(ctx context.Context, in *kms.DecryptInput, opt ...func(*kms.Options)) (*kms.DecryptOutput, error) {
+			kmsDecryptCalls++
+			return &kms.DecryptOutput{
+				Plaintext: key,
+			}, nil
+		},
+	}
+
+	p := New(mockS3, mockKMS)
+	p.SetFilterConfigs([]*filter.FilterConfig{
+		{
+			Name:   "default",
+			Drop:   []string{},
+			Query:  map[string]interface{}{},
+			Output: &filter.OutputConfig{Format: "hive"},
+		},
+	})
+
+	msg := events.SQSMessage{
+		MessageId: "msg-concatenated",
+		Body: `{
+			"source": "aws.s3",
+			"detail-type": "Object Created",
+			"detail": {
+				"bucket": {"name": "raw-source-bucket"},
+				"object": {"key": "AWSLogs/123456789012/DAS/us-east-1/cluster-JAWX76GRVX64PXJZ5T56KUYHYQ/2026/10/12/das-stream.json"}
+			}
+		}`,
+	}
+
+	err := p.ProcessMessage(ctx, msg, "")
+	if err != nil {
+		t.Fatalf("unexpected error processing concatenated DAS payloads: %v", err)
+	}
+
+	if len(writtenData) == 0 {
+		t.Fatalf("expected parquet data written to S3, got empty bytes")
+	}
+
+	// Because both payloads shared the same Key, the cache should have prevented duplicate KMS calls!
+	if kmsDecryptCalls != 1 {
+		t.Errorf("expected 1 KMS Decrypt call due to dataKeyCache, got %d", kmsDecryptCalls)
+	}
+}

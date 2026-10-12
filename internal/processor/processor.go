@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -191,6 +192,45 @@ func ParseS3Records(body string) ([]S3RecordRef, error) {
 	return nil, fmt.Errorf("failed to parse S3 event: unrecognized message envelope format")
 }
 
+// ParseDASPayloads extracts one or more DAS payloads from an S3 object body.
+// Amazon Data Firehose delivers streaming Kinesis records into S3 in buffered batches,
+// resulting in either concatenated JSON objects (e.g. `{"type":...}{"type":...}`),
+// newline-delimited JSON (`{"type":...}\n{"type":...}`), or a single JSON object.
+func ParseDASPayloads(bodyBytes []byte) ([]model.DASPayload, error) {
+	trimmed := bytes.TrimSpace(bodyBytes)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("empty DAS payload")
+	}
+
+	var payloads []model.DASPayload
+
+	// Check if wrapped in a JSON array
+	if trimmed[0] == '[' {
+		if err := json.Unmarshal(trimmed, &payloads); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal JSON array of DAS payloads: %w", err)
+		}
+		return payloads, nil
+	}
+
+	// Use streaming decoder for single object, concatenated objects, or NDJSON
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	for {
+		var p model.DASPayload
+		if err := dec.Decode(&p); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("failed to parse DAS payload: %w", err)
+		}
+		payloads = append(payloads, p)
+	}
+
+	if len(payloads) == 0 {
+		return nil, fmt.Errorf("no valid DAS payloads found in object")
+	}
+	return payloads, nil
+}
+
 // ProcessMessage handles the complete pipeline for a single SQS message, applying all matched filters
 // to the decrypted and decompressed payload in memory.
 func (p *Processor) ProcessMessage(ctx context.Context, message events.SQSMessage, rdsResourceID string, customFilters ...*filter.FilterConfig) error {
@@ -251,63 +291,76 @@ func (p *Processor) ProcessMessage(ctx context.Context, message events.SQSMessag
 			return fmt.Errorf("failed to read S3 object body: %w", err)
 		}
 
-		// 2. Parse the DAS Payload
-		var payload model.DASPayload
-		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		// 2. Parse the DAS Payload(s) - handles single JSON, concatenated JSON objects, NDJSON, or JSON arrays
+		payloads, err := ParseDASPayloads(bodyBytes)
+		if err != nil {
 			return fmt.Errorf("failed to parse DAS payload: %w", err)
 		}
 
-		// 3. Decrypt KMS data key
-		decodedKmsKey, err := base64.StdEncoding.DecodeString(payload.Key)
-		if err != nil {
-			return fmt.Errorf("failed to base64 decode KMS key: %w", err)
-		}
-
 		kmsRegion := ResolveKMSRegion(matchedFilters)
-		slog.Info("Decrypting KMS data key",
-			"ResourceID", clusterID,
-			"KMSRegion", kmsRegion,
-		)
 
-		decryptOutput, err := p.KMSClient.Decrypt(ctx, &kms.DecryptInput{
-			CiphertextBlob: decodedKmsKey,
-			EncryptionContext: map[string]string{
-				"aws:rds:dbc-id": clusterID,
-			},
-		}, func(o *kms.Options) {
-			if kmsRegion != "" {
-				o.Region = kmsRegion
+		// 3. Decrypt and decompress all records in the chunk
+		var allEvents []map[string]interface{}
+		// Cache decrypted plaintext data keys by base64 ciphertext blob to avoid duplicate KMS calls
+		dataKeyCache := make(map[string][]byte)
+
+		for _, payload := range payloads {
+			plaintextDataKey, ok := dataKeyCache[payload.Key]
+			if !ok {
+				decodedKmsKey, err := base64.StdEncoding.DecodeString(payload.Key)
+				if err != nil {
+					return fmt.Errorf("failed to base64 decode KMS key: %w", err)
+				}
+
+				slog.Info("Decrypting KMS data key",
+					"ResourceID", clusterID,
+					"KMSRegion", kmsRegion,
+				)
+
+				decryptOutput, err := p.KMSClient.Decrypt(ctx, &kms.DecryptInput{
+					CiphertextBlob: decodedKmsKey,
+					EncryptionContext: map[string]string{
+						"aws:rds:dbc-id": clusterID,
+					},
+				}, func(o *kms.Options) {
+					if kmsRegion != "" {
+						o.Region = kmsRegion
+					}
+				})
+				if err != nil {
+					return fmt.Errorf("failed to decrypt KMS data key: %w", err)
+				}
+
+				plaintextDataKey = decryptOutput.Plaintext
+				dataKeyCache[payload.Key] = plaintextDataKey
 			}
-		})
-		if err != nil {
-			return fmt.Errorf("failed to decrypt KMS data key: %w", err)
-		}
 
-		plaintextDataKey := decryptOutput.Plaintext
+			// 4. Decrypt events payload using AWS Encryption SDK
+			decodedPayload, err := base64.StdEncoding.DecodeString(payload.DatabaseActivityEvents)
+			if err != nil {
+				return fmt.Errorf("failed to base64 decode events payload: %w", err)
+			}
 
-		// 4. Decrypt events payload using AWS Encryption SDK
-		decodedPayload, err := base64.StdEncoding.DecodeString(payload.DatabaseActivityEvents)
-		if err != nil {
-			return fmt.Errorf("failed to base64 decode events payload: %w", err)
-		}
+			decryptedPayload, err := crypto.DecryptAWSEncryptionSDKPayload(ctx, decodedPayload, plaintextDataKey)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt events payload: %w", err)
+			}
 
-		decryptedPayload, err := crypto.DecryptAWSEncryptionSDKPayload(ctx, decodedPayload, plaintextDataKey)
-		if err != nil {
-			return fmt.Errorf("failed to decrypt events payload: %w", err)
-		}
+			// 5. Decompress the payload
+			decompressedPayload, err := crypto.DecompressZlib(decryptedPayload)
+			if err != nil {
+				return fmt.Errorf("failed to decompress events payload: %w", err)
+			}
 
-		// 5. Decompress the payload
-		decompressedPayload, err := crypto.DecompressZlib(decryptedPayload)
-		if err != nil {
-			return fmt.Errorf("failed to decompress events payload: %w", err)
-		}
+			// 6. Parse JSON events
+			var container struct {
+				DatabaseActivityEventList []map[string]interface{} `json:"databaseActivityEventList"`
+			}
+			if err := json.Unmarshal(decompressedPayload, &container); err != nil {
+				return fmt.Errorf("failed to parse database activity events JSON: %w", err)
+			}
 
-		// 6. Parse JSON events
-		var container struct {
-			DatabaseActivityEventList []map[string]interface{} `json:"databaseActivityEventList"`
-		}
-		if err := json.Unmarshal(decompressedPayload, &container); err != nil {
-			return fmt.Errorf("failed to parse database activity events JSON: %w", err)
+			allEvents = append(allEvents, container.DatabaseActivityEventList...)
 		}
 
 		// 7. Write to analytical destination S3 for each matched filter
@@ -347,7 +400,7 @@ func (p *Processor) ProcessMessage(ctx context.Context, message events.SQSMessag
 				activeKmsKeyID = f.Output.KmsKeyID
 			}
 
-			parquetBytes, rowCount, err := parquet.ConvertEventsToParquet(container.DatabaseActivityEventList, f)
+			parquetBytes, rowCount, err := parquet.ConvertEventsToParquet(allEvents, f)
 			if err != nil {
 				return fmt.Errorf("failed to convert events to Parquet for filter %q: %w", activeFilterName, err)
 			}
