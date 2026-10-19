@@ -6,7 +6,7 @@ require (
 	github.com/aws/aws-cryptographic-material-providers-library/releases/go/mpl v0.4.0
 	github.com/aws/aws-encryption-sdk/releases/go/encryption-sdk v0.4.0
 	github.com/aws/aws-lambda-go v1.55.1
-	github.com/aws/aws-sdk-go-v2 v1.47.2
+	github.com/aws/aws-sdk-go-v2 v1.47.3
 	github.com/aws/aws-sdk-go-v2/config v1.33.8
 	github.com/aws/aws-sdk-go-v2/service/kms v1.61.3
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.2
@@ -36,7 +36,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.38.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.3 // indirect
-	github.com/aws/smithy-go v1.28.4 // indirect
+	github.com/aws/smithy-go v1.28.5 // indirect
 	github.com/dafny-lang/DafnyRuntimeGo/v4 v4.11.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.20.1 // indirect
